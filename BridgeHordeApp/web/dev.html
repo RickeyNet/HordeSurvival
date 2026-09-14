@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Horde Survival - Dev</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #0b0e14; overflow: hidden; touch-action: none; user-select: none; }
+  #wrap { height: 100%; display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; }
+  #note { position: fixed; top: 6px; left: 8px; color: #445; font: 11px monospace; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game"></canvas></div>
+<div id="note">dev harness - logic from game/core.js</div>
+<script type="module">
+import * as G from "../game/core.js";
+import { createAudioEngine } from "../game/audio.js";
+
+// ---------- Canvas setup ----------
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+let viewScale = 1;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  viewScale = Math.min(window.innerWidth / G.W, window.innerHeight / G.H);
+  canvas.style.width = Math.floor(G.W * viewScale) + "px";
+  canvas.style.height = Math.floor(G.H * viewScale) + "px";
+  canvas.width = Math.floor(G.W * viewScale * dpr);
+  canvas.height = Math.floor(G.H * viewScale * dpr);
+  ctx.setTransform(viewScale * dpr, 0, 0, viewScale * dpr, 0, 0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ---------- Perspective projection ----------
+// Core logic is unchanged: y runs 0 (spawn) -> PLAYER_Y (your line).
+// The renderer turns that into depth: far away at the horizon, huge up close.
+const HORIZON = 195;          // screen y of the vanishing point
+const PLINE = 570;            // screen y of your front line
+const PERSP = 3.2;            // how aggressive the perspective is
+const XS = 1.17;              // horizontal spread at your line
+const S_END = 1 / (1 + PERSP);
+const ACTOR_SCALE = 1.2;      // global size boost for zombies/soldiers/crates
+
+function proj(x, y) {
+  const d = (G.PLAYER_Y - y) / G.PLAYER_Y;      // 0 = at you, 1 = horizon
+  let s, sy;
+  if (d >= 0) {
+    s = 1 / (1 + Math.min(d, 1) * PERSP);
+    const sn = (s - S_END) / (1 - S_END);
+    sy = HORIZON + (PLINE - HORIZON) * sn;
+  } else {
+    s = 1 - d * 2.2;                             // rows behind the line grow gently
+    sy = PLINE + (y - G.PLAYER_Y) * 1.3;
+  }
+  return { x: G.W / 2 + (x - G.ROAD_MID) * XS * s, y: sy, s };
+}
+const fogAlpha = (y) => {
+  const d = (G.PLAYER_Y - y) / G.PLAYER_Y;
+  return Math.min(1, 0.18 + (1 - Math.min(d, 1)) * 2.2);
+};
+
+// ---------- Game instance ----------
+const game = G.newGame();
+game.best = Number(localStorage.getItem("bridgeHordeBest") || 0);
+const saveBest = (b) => localStorage.setItem("bridgeHordeBest", String(b));
+
+// ---------- Input ----------
+let dragging = false, lastPointerX = 0;
+const keys = {};
+const toWorldX = (clientX) => (clientX - canvas.getBoundingClientRect().left) / viewScale;
+const toWorldY = (clientY) => (clientY - canvas.getBoundingClientRect().top) / viewScale;
+canvas.addEventListener("pointerdown", (e) => {
+  initAudio();
+  const wx = toWorldX(e.clientX), wy = toWorldY(e.clientY);
+  if (game.state === "playing" && G.inPauseBtn(wx, wy)) { G.togglePause(game); if (engine) engine.click(); return; }
+  if (game.state === "paused") { G.togglePause(game); if (engine) engine.click(); return; }
+  if (game.state !== "playing") { G.resetRun(game); return; }
+  dragging = true;
+  lastPointerX = wx;
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!dragging || game.state !== "playing") return;
+  const x = toWorldX(e.clientX);
+  game.player.x += (x - lastPointerX) * 1.4;
+  lastPointerX = x;
+});
+window.addEventListener("pointerup", () => (dragging = false));
+window.addEventListener("keydown", (e) => {
+  keys[e.key] = true;
+  if (e.key === "p" || e.key === "Escape") { G.togglePause(game); return; }
+  if (game.state !== "playing" && game.state !== "paused" && (e.key === " " || e.key === "Enter")) { initAudio(); G.resetRun(game); }
+});
+window.addEventListener("keyup", (e) => (keys[e.key] = false));
+
+// ---------- Sound (shared engine: music + all SFX) ----------
+let audio = null, engine = null;
+function initAudio() {
+  if (!audio) {
+    try {
+      audio = new (window.AudioContext || window.webkitAudioContext)();
+      engine = createAudioEngine(audio);
+      engine.startMusic();
+      engine.setMood("menu");
+    } catch (e) {}
+  }
+  if (audio && audio.state === "suspended") audio.resume();
+}
+
+// ---------- Scenery ----------
+function drawSky() {
+  const sky = ctx.createLinearGradient(0, 0, 0, HORIZON + 40);
+  sky.addColorStop(0, "#131b33");
+  sky.addColorStop(0.55, "#3d2f52");
+  sky.addColorStop(0.85, "#a35a3c");
+  sky.addColorStop(1, "#e8955a");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, G.W, HORIZON + 40);
+
+  // low sun with glow
+  const sunX = 265, sunY = HORIZON - 8;
+  const glow = ctx.createRadialGradient(sunX, sunY, 4, sunX, sunY, 70);
+  glow.addColorStop(0, "rgba(255,214,140,0.9)");
+  glow.addColorStop(1, "rgba(255,214,140,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(sunX - 70, sunY - 70, 140, 140);
+  ctx.fillStyle = "#ffdf9e";
+  ctx.beginPath(); ctx.arc(sunX, sunY, 16, 0, Math.PI * 2); ctx.fill();
+
+  // drifting clouds
+  const t = performance.now() / 1000;
+  ctx.fillStyle = "rgba(70,60,95,0.5)";
+  for (const [cx, cy, cw] of [[80, 60, 70], [260, 95, 90], [150, 140, 60]]) {
+    const ox = ((t * 4 + cx) % (G.W + 160)) - 80;
+    ctx.beginPath();
+    ctx.ellipse(ox, cy, cw, 13, 0, 0, Math.PI * 2);
+    ctx.ellipse(ox + cw * 0.4, cy + 6, cw * 0.6, 10, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawWaterAndCity() {
+  // water either side of the bridge
+  const wat = ctx.createLinearGradient(0, HORIZON, 0, G.H);
+  wat.addColorStop(0, "#7a5a54");
+  wat.addColorStop(0.25, "#2c4a63");
+  wat.addColorStop(1, "#122a3d");
+  ctx.fillStyle = wat;
+  ctx.fillRect(0, HORIZON, G.W, G.H - HORIZON);
+  // shimmer streaks
+  ctx.strokeStyle = "rgba(255,214,140,0.12)";
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 12; i++) {
+    const y = HORIZON + 14 + i * i * 2.4;
+    const w = 20 + i * 14;
+    ctx.beginPath(); ctx.moveTo(230 - w / 2, y); ctx.lineTo(230 + w / 2, y); ctx.stroke();
+  }
+  // distant city skyline
+  ctx.fillStyle = "#221d33";
+  const bld = [[0,26,22],[26,38,18],[48,20,26],[78,44,20],[102,30,16],[122,52,24],[150,34,18],[172,24,30],[206,46,20],[230,30,16],[250,40,22],[276,22,18],[298,50,20],[322,32,26],[352,42,20],[376,24,24]];
+  for (const [bx, bh, bw] of bld) ctx.fillRect(bx, HORIZON - bh, bw, bh + 4);
+  // a few lit windows
+  ctx.fillStyle = "rgba(255,220,150,0.55)";
+  for (let i = 0; i < 26; i++) {
+    const bx = (i * 53) % 390, by = HORIZON - 6 - ((i * 29) % 38);
+    ctx.fillRect(bx, by, 2, 3);
+  }
+}
+
+function roadEdge(d, side) {
+  const s = 1 / (1 + d * PERSP);
+  const sn = (s - S_END) / (1 - S_END);
+  const y = HORIZON + (PLINE - HORIZON) * sn;
+  const x = G.W / 2 + ((side === "l" ? G.ROAD_L : G.ROAD_R) - G.ROAD_MID) * XS * s;
+  return { x, y, s };
+}
+
+function drawBridge() {
+  // deck: trapezoid from below the screen to the horizon
+  const nearS = 1.55;
+  const nl = G.W / 2 + (G.ROAD_L - G.ROAD_MID) * XS * nearS;
+  const nr = G.W / 2 + (G.ROAD_R - G.ROAD_MID) * XS * nearS;
+  const fl = roadEdge(1, "l"), fr = roadEdge(1, "r");
+  const deck = ctx.createLinearGradient(0, HORIZON, 0, G.H);
+  deck.addColorStop(0, "#57504e");
+  deck.addColorStop(1, "#3a3f47");
+  ctx.fillStyle = deck;
+  ctx.beginPath();
+  ctx.moveTo(nl, G.H); ctx.lineTo(fl.x, fl.y); ctx.lineTo(fr.x, fr.y); ctx.lineTo(nr, G.H);
+  ctx.closePath(); ctx.fill();
+
+  // center dashes marching into the distance
+  ctx.fillStyle = "rgba(255,255,255,0.35)";
+  for (let i = 0; i < 14; i++) {
+    const d0 = i / 14, d1 = d0 + 0.55 / 14;
+    const a = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d0));
+    const b = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d1));
+    ctx.beginPath();
+    ctx.moveTo(a.x - 2.6 * a.s, a.y); ctx.lineTo(a.x + 2.6 * a.s, a.y);
+    ctx.lineTo(b.x + 2.6 * b.s, b.y); ctx.lineTo(b.x - 2.6 * b.s, b.y);
+    ctx.closePath(); ctx.fill();
+  }
+
+  // railings: edge lines + posts
+  for (const side of ["l", "r"]) {
+    const n = roadEdge(-0.001, side); // just at the line, extended below by deck
+    const f = roadEdge(1, side);
+    const nx = side === "l" ? nl : nr;
+    ctx.strokeStyle = "#20242c";
+    ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.moveTo(nx, G.H); ctx.lineTo(f.x, f.y); ctx.stroke();
+    ctx.lineWidth = 2.5;
+    for (let i = 0; i < 16; i++) {
+      const d = i / 15;
+      const e = roadEdge(d, side);
+      const ph = 26 * e.s;
+      ctx.strokeStyle = "#2b303a";
+      ctx.beginPath(); ctx.moveTo(e.x, e.y); ctx.lineTo(e.x, e.y - ph); ctx.stroke();
+    }
+    // top rail
+    ctx.strokeStyle = "#3a404d";
+    ctx.lineWidth = 3;
+    const n2 = roadEdge(0, side), f2 = roadEdge(1, side);
+    ctx.beginPath(); ctx.moveTo(nx, G.H - 40); ctx.lineTo(n2.x, n2.y - 26); ctx.lineTo(f2.x, f2.y - 26 * f2.s); ctx.stroke();
+  }
+
+  // far suspension towers + cables
+  const tf = 0.72;
+  for (const side of ["l", "r"]) {
+    const e = roadEdge(tf, side);
+    const th = 170 * e.s;
+    ctx.fillStyle = "#232838";
+    ctx.fillRect(e.x - 5 * e.s, e.y - th, 10 * e.s, th);
+    ctx.fillRect(e.x - 8 * e.s, e.y - th, 16 * e.s, 6 * e.s); // cap
+  }
+  // main cables sweeping from screen top corners through far towers to the horizon
+  const lt = roadEdge(tf, "l"), rt = roadEdge(tf, "r");
+  const vp = { x: G.W / 2, y: HORIZON };
+  ctx.strokeStyle = "#2c3244";
+  ctx.lineWidth = 3.5;
+  ctx.beginPath();
+  ctx.moveTo(-24, 30);
+  ctx.quadraticCurveTo(lt.x - 40, lt.y - 20, lt.x, lt.y - 170 * lt.s);
+  ctx.quadraticCurveTo(lt.x + 40, HORIZON - 12, vp.x - 14, vp.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(G.W + 24, 30);
+  ctx.quadraticCurveTo(rt.x + 40, rt.y - 20, rt.x, rt.y - 170 * rt.s);
+  ctx.quadraticCurveTo(rt.x - 40, HORIZON - 12, vp.x + 14, vp.y);
+  ctx.stroke();
+  // hanger cables on the near span
+  ctx.strokeStyle = "rgba(44,50,68,0.7)";
+  ctx.lineWidth = 1.5;
+  for (let i = 1; i < 7; i++) {
+    const d = tf * (i / 7) * 0.9;
+    for (const side of ["l", "r"]) {
+      const e = roadEdge(d, side);
+      const cableY = 30 + (e.y - 170 * 0.2 - 30) * Math.pow(i / 7, 1.4);
+      ctx.beginPath(); ctx.moveTo(e.x, e.y - 26 * e.s); ctx.lineTo(e.x + (side === "l" ? -8 : 8) * (1 - d), cableY); ctx.stroke();
+    }
+  }
+}
+
+// ---------- Actors ----------
+function shadow(px, py, w) {
+  ctx.fillStyle = "rgba(0,0,0,0.3)";
+  ctx.beginPath(); ctx.ellipse(px, py, w, w * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+}
+
+// Distinct look per enemy kind (see KIND_STATS in game/core.js)
+const ZPAL = {
+  walker:   { skin: "#86bb4d", shirt: "#3f5a35" },
+  runner:   { skin: "#b4c94e", shirt: "#6b6f2a" },
+  tank:     { skin: "#7fa08a", shirt: "#41535d", armor: "#5a6d78" },
+  brute:    { skin: "#c97a4a", shirt: "#6e3a1f" },
+  summoner: { skin: "#b08ae0", shirt: "#4b2d73" },
+  colossus: { skin: "#9aa7b3", shirt: "#4a5560" },
+};
+
+function drawZombie(z) {
+  const p = proj(z.x, z.y);
+  const k = p.s * (z.size / 13) * ACTOR_SCALE;
+  const wob = Math.sin(z.wob);
+  ctx.globalAlpha = fogAlpha(z.y);
+  shadow(p.x, p.y, 15 * k);
+
+  const pal = ZPAL[z.kind] || ZPAL.walker;
+  const skin = pal.skin;
+  const shirt = pal.shirt;
+  const pants = "#2e3440";
+
+  // legs (shambling)
+  ctx.strokeStyle = pants;
+  ctx.lineWidth = 5 * k;
+  ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(p.x - 5 * k, p.y - 18 * k); ctx.lineTo(p.x - 6 * k + wob * 3 * k, p.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p.x + 5 * k, p.y - 18 * k); ctx.lineTo(p.x + 6 * k - wob * 3 * k, p.y); ctx.stroke();
+
+  // torso: ragged shirt
+  ctx.fillStyle = shirt;
+  ctx.beginPath();
+  ctx.moveTo(p.x - 11 * k, p.y - 40 * k);
+  ctx.lineTo(p.x + 11 * k, p.y - 40 * k);
+  ctx.lineTo(p.x + 9 * k, p.y - 16 * k);
+  ctx.lineTo(p.x + 3 * k, p.y - 20 * k);
+  ctx.lineTo(p.x - 3 * k, p.y - 15 * k);
+  ctx.lineTo(p.x - 9 * k, p.y - 19 * k);
+  ctx.closePath(); ctx.fill();
+
+  // arms reaching out at you
+  ctx.strokeStyle = skin;
+  ctx.lineWidth = 4.5 * k;
+  ctx.beginPath(); ctx.moveTo(p.x - 10 * k, p.y - 37 * k); ctx.lineTo(p.x - 17 * k, p.y - 26 * k + wob * 4 * k); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p.x + 10 * k, p.y - 37 * k); ctx.lineTo(p.x + 17 * k, p.y - 26 * k - wob * 4 * k); ctx.stroke();
+  // hands
+  ctx.fillStyle = skin;
+  ctx.beginPath(); ctx.arc(p.x - 17 * k, p.y - 26 * k + wob * 4 * k, 3 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(p.x + 17 * k, p.y - 26 * k - wob * 4 * k, 3 * k, 0, Math.PI * 2); ctx.fill();
+
+  // armor plate on tanks
+  if (z.kind === "tank") {
+    ctx.fillStyle = pal.armor;
+    ctx.fillRect(p.x - 8 * k, p.y - 38 * k, 16 * k, 14 * k);
+  }
+
+  // head with face - it's looking AT you (bosses get glowing red eyes)
+  const hy = p.y - 48 * k + wob * 1.5 * k;
+  ctx.fillStyle = skin;
+  ctx.beginPath(); ctx.arc(p.x, hy, 8 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = z.boss ? "#e02020" : "#1d2410";
+  ctx.beginPath(); ctx.arc(p.x - 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(p.x + 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#1d2410";
+  ctx.fillRect(p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k); // snarl
+
+  // HP bar
+  if (z.hp < z.maxHp || z.big) {
+    const w = 26 * k;
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(p.x - w / 2, hy - 15 * k, w, 3.5 * k);
+    ctx.fillStyle = "#e0342f";
+    ctx.fillRect(p.x - w / 2, hy - 15 * k, w * (z.hp / z.maxHp), 3.5 * k);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawSoldier(x, y, firing) {
+  const p = proj(x, y);
+  const k = p.s * ACTOR_SCALE;
+  shadow(p.x, p.y, 10 * k);
+
+  // legs
+  ctx.strokeStyle = "#2c3444";
+  ctx.lineWidth = 4.5 * k;
+  ctx.lineCap = "round";
+  ctx.beginPath(); ctx.moveTo(p.x - 4 * k, p.y - 14 * k); ctx.lineTo(p.x - 4 * k, p.y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(p.x + 4 * k, p.y - 14 * k); ctx.lineTo(p.x + 4 * k, p.y); ctx.stroke();
+
+  // torso (seen from behind) + backpack
+  ctx.fillStyle = "#4a5d3a";
+  ctx.beginPath();
+  ctx.moveTo(p.x - 8 * k, p.y - 32 * k);
+  ctx.lineTo(p.x + 8 * k, p.y - 32 * k);
+  ctx.lineTo(p.x + 7 * k, p.y - 12 * k);
+  ctx.lineTo(p.x - 7 * k, p.y - 12 * k);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = "#3a4a2e";
+  ctx.fillRect(p.x - 5 * k, p.y - 29 * k, 10 * k, 11 * k);
+
+  // rifle poking up over the right shoulder
+  ctx.strokeStyle = "#1c1f26";
+  ctx.lineWidth = 3 * k;
+  ctx.beginPath(); ctx.moveTo(p.x + 5 * k, p.y - 30 * k); ctx.lineTo(p.x + 7 * k, p.y - 46 * k); ctx.stroke();
+
+  // muzzle flash
+  if (firing) {
+    ctx.fillStyle = "#ffe27a";
+    ctx.beginPath();
+    const fx = p.x + 7.5 * k, fy = p.y - 49 * k;
+    for (let i = 0; i < 5; i++) {
+      const a = -Math.PI / 2 + (i - 2) * 0.5;
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(fx + Math.cos(a) * 7 * k, fy + Math.sin(a) * 7 * k);
+    }
+    ctx.stroke();
+    ctx.strokeStyle = "#ffe27a";
+    ctx.lineWidth = 2 * k;
+    ctx.stroke();
+  }
+
+  // helmet
+  ctx.fillStyle = "#39452e";
+  ctx.beginPath(); ctx.arc(p.x, p.y - 38 * k, 6.5 * k, Math.PI, 0); ctx.fill();
+  ctx.fillRect(p.x - 6.5 * k, p.y - 38 * k, 13 * k, 3 * k);
+  ctx.fillStyle = "#c9a06c";
+  ctx.fillRect(p.x - 4 * k, p.y - 35.5 * k, 8 * k, 2.5 * k); // neck
+}
+
+function drawGate(g) {
+  const p = proj(G.ROAD_MID, g.y);
+  const halves = [
+    { x0: G.ROAD_L + 4, x1: G.ROAD_MID - 2, e: g.left },
+    { x0: G.ROAD_MID + 2, x1: G.ROAD_R - 4, e: g.right },
+  ];
+  ctx.globalAlpha = fogAlpha(g.y);
+  for (const h of halves) {
+    const a = proj(h.x0, g.y), b = proj(h.x1, g.y);
+    const hgt = 92 * p.s;
+    // glow
+    ctx.shadowColor = h.e.color;
+    ctx.shadowBlur = 14 * p.s;
+    ctx.fillStyle = h.e.color + "44";
+    ctx.fillRect(a.x, a.y - hgt, b.x - a.x, hgt);
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = h.e.color;
+    ctx.lineWidth = 2.5 * p.s;
+    ctx.strokeRect(a.x, a.y - hgt, b.x - a.x, hgt);
+    // posts
+    ctx.fillStyle = "#d8dde6";
+    ctx.fillRect(a.x - 2 * p.s, a.y - hgt, 4 * p.s, hgt);
+    ctx.fillRect(b.x - 2 * p.s, b.y - hgt, 4 * p.s, hgt);
+    // label
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold " + Math.max(9, 22 * p.s) + "px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(h.e.label, (a.x + b.x) / 2, a.y - hgt * 0.42);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawBullet(b) {
+  const p = proj(b.x, b.y);
+  const w = G.WEAPONS[b.wkey] || G.WEAPONS.rifle;
+  ctx.globalAlpha = fogAlpha(b.y);
+  ctx.strokeStyle = w.color;
+  ctx.shadowColor = w.color;
+  ctx.shadowBlur = 6 * p.s;
+  ctx.lineWidth = (w.aoe ? 4.5 : w.pierce ? 3.5 : 2.5) * p.s;
+  const len = w.pierce ? 18 : 10;
+  ctx.beginPath(); ctx.moveTo(p.x, p.y - 30 * p.s); ctx.lineTo(p.x, p.y - (30 + len) * p.s); ctx.stroke();
+  ctx.shadowBlur = 0;
+  ctx.globalAlpha = 1;
+}
+
+
+// ---------- HUD / overlays ----------
+function drawWall(w) {
+  const a = proj(G.ROAD_L + 6, w.y), b = proj(G.ROAD_R - 6, w.y);
+  const s = proj(G.ROAD_MID, w.y).s * ACTOR_SCALE;
+  const h = 26 * s;
+  ctx.globalAlpha = fogAlpha(w.y);
+  // planks
+  ctx.fillStyle = "#8a6b42";
+  ctx.fillRect(a.x, a.y - h, b.x - a.x, h);
+  ctx.fillStyle = "#6e5230";
+  ctx.fillRect(a.x, a.y - h, b.x - a.x, 4 * s);
+  ctx.fillRect(a.x, a.y - h / 2, b.x - a.x, 3 * s);
+  // posts
+  ctx.fillStyle = "#54401f";
+  for (let i = 0; i <= 6; i++) {
+    const px = a.x + ((b.x - a.x) * i) / 6;
+    ctx.fillRect(px - 2 * s, a.y - h - 6 * s, 4 * s, h + 6 * s);
+  }
+  // hp bar
+  const bw = (b.x - a.x) * 0.5;
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect((a.x + b.x) / 2 - bw / 2, a.y - h - 15 * s, bw, 5 * s);
+  ctx.fillStyle = "#4dd0c4";
+  ctx.fillRect((a.x + b.x) / 2 - bw / 2, a.y - h - 15 * s, bw * (w.hp / w.maxHp), 5 * s);
+  ctx.globalAlpha = 1;
+}
+
+function drawHUD() {
+  ctx.fillStyle = "rgba(0,0,0,0.45)";
+  ctx.fillRect(0, 0, G.W, 48);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 20px system-ui, sans-serif";
+  ctx.textAlign = "left"; ctx.fillText("SCORE " + game.score, 12, 31);
+  ctx.textAlign = "center"; ctx.fillText("WAVE " + game.wave, G.W / 2 - 10, 31);
+  ctx.textAlign = "right"; ctx.fillText("BEST " + game.best, G.W - 52, 31);
+  // pause button
+  const pb = G.PAUSE_BTN;
+  ctx.fillStyle = "rgba(255,255,255,0.15)";
+  ctx.beginPath(); ctx.roundRect(pb.x, pb.y, pb.w, pb.h, 8); ctx.fill();
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(pb.x + 11, pb.y + 9, 5, 18);
+  ctx.fillRect(pb.x + 20, pb.y + 9, 5, 18);
+  ctx.textAlign = "center";
+  ctx.font = "16px system-ui, sans-serif";
+  ctx.fillStyle = "#9fd4ff";
+  ctx.fillText(
+    G.WEAPONS[game.player.weapon].label + "   troops " + game.player.troops + "   dmg " + game.player.damage + "   rate " + game.player.fireRate.toFixed(1),
+    G.W / 2, G.H - 14
+  );
+}
+function drawOverlay() {
+  ctx.fillStyle = "rgba(0,0,0,0.6)";
+  ctx.fillRect(0, 0, G.W, G.H);
+  const menu = game.state === "menu", paused = game.state === "paused";
+  ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.font = "bold 40px system-ui, sans-serif";
+  ctx.fillText(paused ? "PAUSED" : menu ? "HORDE SURVIVAL" : "OVERRUN!", G.W / 2, G.H / 2 - 60);
+  ctx.font = "20px system-ui, sans-serif"; ctx.fillStyle = "#9fd4ff";
+  ctx.fillText(paused ? "Score: " + game.score : menu ? "Drag to move - you fire automatically" : "Score: " + game.score, G.W / 2, G.H / 2 - 10);
+  if (!paused) {
+    if (!menu && game.newBest) {
+      ctx.fillStyle = "#ffd84d"; ctx.font = "bold 26px system-ui, sans-serif";
+      ctx.fillText("★ NEW BEST! ★", G.W / 2, G.H / 2 + 32);
+    } else {
+      ctx.fillText(menu ? "Steer into gates - avoid the red ones!" : "Best: " + game.best, G.W / 2, G.H / 2 + 26);
+    }
+  }
+  ctx.fillStyle = "#f5c211"; ctx.font = "bold 22px system-ui, sans-serif";
+  ctx.fillText(paused ? "TAP TO RESUME" : "TAP TO " + (menu ? "START" : "RETRY"), G.W / 2, G.H / 2 + 90);
+}
+
+// ---------- Frame ----------
+function draw() {
+  ctx.save();
+  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+
+  drawSky();
+  drawWaterAndCity();
+  drawBridge();
+
+  // everything on the road, far to near
+  const actors = [
+    ...game.gates.map((g) => ({ y: g.y, kind: "gate", ref: g })),
+    ...game.zombies.map((z) => ({ y: z.y, kind: "zombie", ref: z })),
+    ...game.walls.map((w) => ({ y: w.y, kind: "wall", ref: w })),
+  ].sort((a, b) => a.y - b.y);
+  for (const a of actors) {
+    if (a.kind === "gate") drawGate(a.ref);
+    else if (a.kind === "wall") drawWall(a.ref);
+    else drawZombie(a.ref);
+  }
+
+  for (const b of game.bullets) drawBullet(b);
+
+  const firing = game.fireTimer > 1 / game.player.fireRate - 0.07;
+  const spots = G.formationSpots(game.player.troops, game.player.x);
+  for (let i = spots.length - 1; i >= 0; i--) drawSoldier(spots[i].x, spots[i].y, firing);
+
+  for (const p of game.particles) {
+    const q = proj(p.x, p.y);
+    ctx.globalAlpha = Math.max(0, p.life / 0.35);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(q.x - 2.5 * q.s, q.y - 2.5 * q.s, 5 * q.s, 5 * q.s);
+  }
+  ctx.globalAlpha = 1;
+  for (const f of game.floaters) {
+    const q = proj(f.x, f.y);
+    ctx.globalAlpha = Math.max(0, f.life);
+    ctx.fillStyle = f.color;
+    ctx.font = "bold " + Math.round(22 * Math.min(1.3, Math.max(0.6, q.s))) + "px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(f.text, q.x, q.y - 60 * q.s);
+  }
+  ctx.globalAlpha = 1;
+
+  // wave / boss announcement banner
+  if (game.banner.life > 0) {
+    ctx.globalAlpha = Math.min(1, game.banner.life);
+    ctx.font = "bold 40px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "rgba(0,0,0,0.55)";
+    ctx.strokeText(game.banner.text, G.W / 2, 300);
+    ctx.fillStyle = "#ffd84d";
+    ctx.fillText(game.banner.text, G.W / 2, 300);
+    ctx.globalAlpha = 1;
+  }
+
+  drawHUD();
+  ctx.restore();
+  if (game.state !== "playing") drawOverlay();
+}
+
+// ---------- Main loop ----------
+let last = performance.now();
+let prevState = game.state;
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (game.state === "playing") {
+    if (keys.ArrowLeft || keys.a) game.player.x -= 280 * dt;
+    if (keys.ArrowRight || keys.d) game.player.x += 280 * dt;
+    G.update(game, dt, saveBest);
+    if (engine) engine.playEvents(game);
+  }
+  if (engine) {
+    const bossAlive = game.zombies.some((z) => z.boss);
+    engine.setMood(game.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
+    if (game.state === "gameover" && prevState === "playing") engine.gameOverJingle(game.newBest);
+  }
+  prevState = game.state;
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

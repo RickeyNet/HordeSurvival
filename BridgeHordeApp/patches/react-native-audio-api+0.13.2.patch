@@ -1,0 +1,29 @@
+diff --git a/node_modules/react-native-audio-api/android/build.gradle b/node_modules/react-native-audio-api/android/build.gradle
+index 0033a2b..13907b1 100644
+--- a/node_modules/react-native-audio-api/android/build.gradle
++++ b/node_modules/react-native-audio-api/android/build.gradle
+@@ -224,6 +224,9 @@ android {
+   externalNativeBuild {
+     cmake {
+       path "CMakeLists.txt"
++      // Windows fix: default staging dir nests deep inside node_modules and
++      // generated object paths blow past the 260-char MAX_PATH limit.
++      buildStagingDirectory "C:/bhx"
+     }
+   }
+ 
+diff --git a/node_modules/react-native-audio-api/scripts/download-prebuilt-binaries.sh b/node_modules/react-native-audio-api/scripts/download-prebuilt-binaries.sh
+index 0e20650..5e69d54 100644
+--- a/node_modules/react-native-audio-api/scripts/download-prebuilt-binaries.sh
++++ b/node_modules/react-native-audio-api/scripts/download-prebuilt-binaries.sh
+@@ -1,6 +1,10 @@
+ #!/bin/bash
+ # Script to download and unzip prebuilt native binaries for React Native.
+ 
++# Windows fix: Gradle invokes Git's bash.exe without its Unix tools on PATH,
++# so rm/find/curl/unzip resolve to nothing. Put them back.
++export PATH="/usr/bin:/mingw64/bin:$PATH"
++
+ MAIN_DOWNLOAD_URL="https://github.com/software-mansion-labs/rn-audio-libs/releases/download"
+ TAG="v3.1.0"
+ DOWNLOAD_NAMES=(
