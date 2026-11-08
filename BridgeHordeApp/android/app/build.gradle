@@ -87,7 +87,7 @@ android {
 
     namespace "com.bridgehorde"
     defaultConfig {
-        applicationId "com.bridgehorde"
+        applicationId "com.rickey.hordesurvival"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 2
