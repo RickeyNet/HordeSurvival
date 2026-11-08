@@ -400,23 +400,29 @@ export function update(g, dt, saveBest) {
   g.bullets = g.bullets.filter((b) => b.y > -100);
   g.walls = g.walls.filter((w) => w.hp > 0);
 
-  // Zombies reaching the squad
+  // Zombies reaching the squad. One that runs into the formation costs
+  // troops; one that slips past the side of it and gets behind the squad
+  // is a breach and costs the same, so dodging isn't a free pass.
   for (const z of g.zombies) {
-    if (z.hp > 0 && z.y >= PLAYER_Y - 8 && Math.abs(z.x - g.player.x) < half + z.size) {
-      z.hp = 0;
-      g.player.troops -= z.troopCost;
-      g.shake = z.boss ? 12 : 6;
-      burst(g, z.x, PLAYER_Y, "#e0342f", z.boss ? 30 : 16);
-      floatText(g, z.x, PLAYER_Y - 30, "-" + z.troopCost + (z.troopCost > 1 ? " TROOPS" : " TROOP"), "#e0342f");
-      g.events.troopLost = true;
-      if (g.player.troops <= 0) {
-        g.player.troops = 0;
-        g.state = "gameover";
-        if (g.score > g.best) {
-          g.best = g.score;
-          g.newBest = true;
-          if (saveBest) saveBest(g.best);
-        }
+    if (z.hp <= 0) continue;
+    const hit = z.y >= PLAYER_Y - 8 && Math.abs(z.x - g.player.x) < half + z.size;
+    const breached = z.y >= PLAYER_Y + 20;
+    if (!hit && !breached) continue;
+    z.hp = 0;
+    g.player.troops -= z.troopCost;
+    g.shake = z.boss ? 12 : 6;
+    const fy = hit ? PLAYER_Y : PLAYER_Y + 20;
+    burst(g, z.x, fy, "#e0342f", z.boss ? 30 : 16);
+    const label = "-" + z.troopCost + (z.troopCost > 1 ? " TROOPS" : " TROOP");
+    floatText(g, z.x, fy - 30, hit ? label : "BREACH " + label, "#e0342f");
+    g.events.troopLost = true;
+    if (g.player.troops <= 0) {
+      g.player.troops = 0;
+      g.state = "gameover";
+      if (g.score > g.best) {
+        g.best = g.score;
+        g.newBest = true;
+        if (saveBest) saveBest(g.best);
       }
     }
   }
