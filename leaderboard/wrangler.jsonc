@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "horde-leaderboard",
+  "main": "src/index.js",
+  "compatibility_date": "2026-11-08",
+  "observability": { "enabled": true },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "horde-leaderboard",
+      // No database_id: Wrangler creates the database on first deploy.
+      "migrations_dir": "migrations"
+    }
+  ]
+}

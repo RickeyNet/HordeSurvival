@@ -15,6 +15,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AudioContext } from "react-native-audio-api";
 import * as G from "./game/core";
 import { createAudioEngine } from "./game/audio";
+import * as LB from "./leaderboard";
 
 // ---------- Sound (shared engine: music + all SFX) ----------
 let audioCtx = null;
@@ -430,6 +431,44 @@ function drawHUD(c, g) {
   text(c, info, G.W / 2 - textWidth(fonts.small, info, 16) / 2, G.H - 14, fill("#9fd4ff"), fonts.small);
 }
 
+// Leaderboard button on the menu / game-over overlay (world coordinates).
+const LB_BTN = { x: G.W / 2 - 110, y: G.H / 2 + 122, w: 220, h: 46 };
+const inLbBtn = (wx, wy) => wx >= LB_BTN.x && wx <= LB_BTN.x + LB_BTN.w && wy >= LB_BTN.y && wy <= LB_BTN.y + LB_BTN.h;
+
+// board: { status: "loading" | "ready" | "error" | "off", data }
+function drawBoard(c, board) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
+  const center = (str, y, font, size, color) =>
+    text(c, str, G.W / 2 - textWidth(font, str, size) / 2, y, fill(color), font);
+  center("LEADERBOARD", 84, fonts.title, 40, "#ffffff");
+  const msg = {
+    loading: "Loading...",
+    error: "Couldn't reach the leaderboard.",
+    off: "Leaderboard isn't set up yet.",
+  }[board.status];
+  if (msg) {
+    center(msg, G.H / 2, fonts.sub, 21, "#9fd4ff");
+  } else {
+    const { top, me } = board.data;
+    if (!top.length) center("No scores yet - be the first!", G.H / 2, fonts.sub, 21, "#9fd4ff");
+    top.forEach((r, i) => {
+      const y = 140 + i * 30;
+      const mine = me && me.rank === r.rank && me.name === r.name;
+      if (mine) rect(c, 24, y - 21, G.W - 48, 28, fill("rgba(245,194,17,0.18)"));
+      const col = mine ? "#f5c211" : i < 3 ? "#ffd84d" : "#ffffff";
+      text(c, "#" + r.rank, 34, y, fill(col), fonts.small);
+      text(c, r.name, 84, y, fill(col), fonts.small);
+      const sc = String(r.score);
+      text(c, sc, G.W - 34 - textWidth(fonts.small, sc, 16), y, fill(col), fonts.small);
+    });
+    if (me) {
+      const youLine = me.rank ? "You: " + me.name + "   #" + me.rank + "   " + me.score : "You: " + me.name + "   (no score yet)";
+      center(youLine, G.H - 82, fonts.small, 16, "#f5c211");
+    }
+  }
+  center("TAP TO CLOSE", G.H - 34, fonts.cta, 24, "#f5c211");
+}
+
 function drawOverlay(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
   const menu = g.state === "menu", paused = g.state === "paused";
@@ -442,10 +481,16 @@ function drawOverlay(c, g) {
     else center(menu ? "Steer into gates - avoid the red ones!" : "Best: " + g.best, G.H / 2 + 26, fonts.sub, 21, "#9fd4ff");
   }
   center(paused ? "TAP TO RESUME" : "TAP TO " + (menu ? "START" : "RETRY"), G.H / 2 + 90, fonts.cta, 24, "#f5c211");
+  if (!paused) {
+    const b = LB_BTN;
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 10, 10), fill("rgba(255,255,255,0.12)"));
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 10, 10), stroke("#9fd4ff", 2));
+    center("LEADERBOARD", b.y + 30, fonts.hud, 20, "#9fd4ff");
+  }
 }
 
 // ---------- Frame ----------
-function drawGame(c, g, layout, t) {
+function drawGame(c, g, layout, t, board) {
   rect(c, 0, 0, layout.sw, layout.sh, fill("#0b0e14"));
   c.save();
   c.translate(layout.offX, layout.offY);
@@ -493,7 +538,8 @@ function drawGame(c, g, layout, t) {
 
   drawHUD(c, g);
   c.restore();
-  if (g.state !== "playing") drawOverlay(c, g);
+  if (board) drawBoard(c, board);
+  else if (g.state !== "playing") drawOverlay(c, g);
   c.restore();
 }
 
@@ -503,6 +549,22 @@ export default function App() {
   const game = useRef(G.newGame());
   const [, setTick] = useState(0);
   const lastX = useRef(0);
+  const board = useRef(null); // open leaderboard screen, or null
+
+  const openBoard = () => {
+    if (!LB.enabled()) {
+      board.current = { status: "off" };
+      return;
+    }
+    const b = { status: "loading" };
+    board.current = b;
+    LB.fetchBoard()
+      .then((data) => { b.status = "ready"; b.data = data; })
+      .catch(() => { b.status = "error"; });
+  };
+
+  // Send any score that couldn't be submitted last time (e.g. was offline).
+  useEffect(() => { LB.flushPending(); }, []);
 
   const scale = Math.min(sw / G.W, sh / G.H);
   const layout = {
@@ -560,6 +622,7 @@ export default function App() {
         G.update(g, dt, saveBest);
         if (engine) engine.playEvents(g);
       }
+      if (g.state === "gameover" && prevState === "playing") LB.recordRun(g.score, g.wave, g.elapsed);
       if (engine) {
         const bossAlive = g.zombies.some((z) => z.boss);
         engine.setMood(g.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
@@ -580,6 +643,16 @@ export default function App() {
     const lay = layoutRef.current;
     const wx = (e.nativeEvent.pageX - lay.offX) / lay.scale;
     const wy = (e.nativeEvent.pageY - lay.offY) / lay.scale;
+    if (board.current) {
+      board.current = null;
+      if (engine) engine.click();
+      return;
+    }
+    if ((g.state === "menu" || g.state === "gameover") && inLbBtn(wx, wy)) {
+      openBoard();
+      if (engine) engine.click();
+      return;
+    }
     if (g.state === "playing" && G.inPauseBtn(wx, wy)) {
       G.togglePause(g);
       if (engine) engine.click();
@@ -604,7 +677,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, board.current));
 
   return (
     <View
