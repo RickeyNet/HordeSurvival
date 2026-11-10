@@ -1,10 +1,10 @@
 # TODO
 
 ## Release blockers
-- [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
+- [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`; the daily board needs migration `0004_daily.sql`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
 - [ ] Add the iOS app icon images (the `AppIcon` asset set is empty) and set a development team in Xcode
 - [ ] Set up Android release signing (`android/keystore.properties` + release keystore); without it release builds use the debug keystore
-- [ ] Check the main menu, resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, game-over summary (with the rank line and coins), leaderboard tabs, name picker and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
+- [ ] Check the main menu (new layout: daily challenge button, two rows of two), resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, achievements screen and unlock banner, a daily run, game-over summary (with the rank line and coins), leaderboard tabs (now three), name picker and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
 
 ## Cleanup
 - [x] Align version numbers (all 1.1; build numbers stay per platform: Android `versionCode` 2, iOS 1)
@@ -22,8 +22,8 @@
 
 ## Reasons to keep playing
 - [x] Persistent upgrades: earn coins per run, spend on starting troops, damage, wall strength (prices and coin payout are first guesses; tune from playtests)
-- [ ] Daily challenge: one fixed seed per day with its own leaderboard
-- [ ] Achievements / milestones (e.g. reach wave 10, beat a boss with the rifle)
+- [x] Daily challenge: one fixed seed per day with its own leaderboard (no upgrades in a daily run; unlimited tries, best of the day counts)
+- [x] Achievements / milestones (13 to start with, each pays coins once; rewards are first guesses)
 - [x] Leaderboard depth: rank on the game-over screen, weekly board, player-chosen names (picked from the word lists, not typed)
 
 ## Content

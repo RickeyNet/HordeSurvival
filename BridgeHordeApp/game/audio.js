@@ -75,6 +75,7 @@ export function createAudioEngine(ctx) {
     if (ev.boom) slide(160, 40, 0.3, 0.09, "sawtooth");
     if (ev.wallBuilt) { tone(440, 0.08, 0.06, "triangle"); tone(550, 0.1, 0.05, "triangle", 0.09); }
     if (ev.wallDown) slide(300, 70, 0.35, 0.08, "sawtooth");
+    if (ev.achieved && ev.achieved.length) [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.16, 0.05, "triangle", i * 0.09));
   }
 
   function gameOverJingle(newBest) {

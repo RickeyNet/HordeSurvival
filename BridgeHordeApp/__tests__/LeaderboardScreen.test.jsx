@@ -11,11 +11,13 @@ const mockBoard = (board) => ({
   me: { name: 'BraveFox17', score: 450, wave: 8, rank: 2 },
   total: 2,
   ...(board === 'week' ? { endsAt: Date.now() + 3 * 86400000 } : {}),
+  ...(board === 'day' ? { endsAt: Date.now() + 5 * 3600000 } : {}),
 });
 const mockStanding = {
   name: 'BraveFox17',
   all: { best: 450, rank: 2, total: 2 },
   week: { id: 1, endsAt: 0, best: 0, rank: null, total: 1 },
+  day: { id: 1, endsAt: 0, best: 450, rank: 1, total: 7 },
 };
 jest.mock('../leaderboard', () => ({
   enabled: () => true,
@@ -60,7 +62,7 @@ async function mount() {
 
 beforeEach(() => jest.clearAllMocks());
 
-test('draws both boards and switches between them', async () => {
+test('draws the three boards and switches between them', async () => {
   const { tapBtn, unmount, LB, MENU_BTNS, BOARD_BTNS } = await mount();
   await tapBtn(MENU_BTNS.board);
   expect(LB.fetchBoard.mock.calls).toEqual([['all']]);
@@ -70,6 +72,11 @@ test('draws both boards and switches between them', async () => {
   expect(LB.fetchBoard).toHaveBeenLastCalledWith('week');
   await tapBtn(BOARD_BTNS.all);
   expect(LB.fetchBoard.mock.calls).toEqual([['all'], ['week'], ['all']]);
+  await tapBtn(BOARD_BTNS.day);
+  await tapBtn(BOARD_BTNS.day); // already there: no reload
+  expect(LB.fetchBoard.mock.calls).toEqual([['all'], ['week'], ['all'], ['day']]);
+  await tapBtn(BOARD_BTNS.week);
+  expect(LB.fetchBoard).toHaveBeenLastCalledWith('week');
   await unmount();
 });
 
@@ -133,12 +140,40 @@ test('game over: sends the run and draws the rank line', async () => {
   await tapBtn({ x: G.W / 2, y: 400, w: 0, h: 0 }); // advances frames; the overlay is drawn
   expect(g.state).toBe('gameover');
   expect(LB.recordRun).toHaveBeenCalledTimes(1);
-  expect(LB.recordRun).toHaveBeenCalledWith(g.score, g.wave, g.elapsed);
+  expect(LB.recordRun).toHaveBeenCalledWith(g.score, g.wave, g.elapsed, null); // not a daily run
   await tapBtn({ x: 0, y: 0, w: 0, h: 0 }); // the standing has arrived: drawn with the rank line (tap retries)
 
   expect(rankLine(mockStanding)).toBe('Global #2 of 2');
   expect(rankLine({ all: { rank: 12, total: 340 }, week: { rank: 3, total: 41 } })).toBe('Global #12 of 340  -  Week #3 of 41');
   expect(rankLine({ all: { rank: null, total: 5 }, week: { rank: null, total: 0 } })).toBe('');
+  await unmount();
+});
+
+test('game over after a daily run: sends the day and shows the place on the daily board', async () => {
+  const { tapBtn, unmount, G, LB, MENU_BTNS, rankLine } = await mount();
+  const today = G.dayOf(Date.now());
+  const spy = jest.spyOn(G, 'resetRun');
+  await tapBtn(MENU_BTNS.daily);
+  const g = spy.mock.calls[0][0];
+  spy.mockRestore();
+  g.score = 450;
+  g.zombies.push({
+    x: G.ROAD_MID, y: G.PLAYER_Y + 25, hp: 1, maxHp: 1, size: 13, speed: 0,
+    wob: 0, kind: 'walker', troopCost: 99, scoreVal: 1,
+  });
+  await tapBtn({ x: G.W / 2, y: 400, w: 0, h: 0 });
+  expect(g.state).toBe('gameover');
+  expect(LB.recordRun).toHaveBeenCalledTimes(1);
+  expect(LB.recordRun).toHaveBeenCalledWith(450, g.wave, g.elapsed, today);
+  await tapBtn({ x: 0, y: 0, w: 0, h: 0 }); // drawn with the rank line
+
+  // today's place comes first and takes the weekly one's spot; ordinary runs never show it
+  expect(rankLine(mockStanding, true)).toBe('Today #1 of 7  -  Global #2 of 2');
+  expect(rankLine(mockStanding, false)).toBe('Global #2 of 2');
+  const full = { all: { rank: 12, total: 340 }, week: { rank: 3, total: 41 }, day: { rank: 5, total: 60 } };
+  expect(rankLine(full, true)).toBe('Today #5 of 60  -  Global #12 of 340');
+  expect(rankLine({ ...full, day: { rank: null, total: 60 } }, true)).toBe('Global #12 of 340  -  Week #3 of 41');
+  expect(rankLine({ all: full.all, week: full.week }, true)).toBe('Global #12 of 340  -  Week #3 of 41'); // an older server
   await unmount();
 });
 

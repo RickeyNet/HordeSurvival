@@ -495,16 +495,16 @@ describe('coins and upgrades', () => {
   test('a finished run pays coins for its score and wave', () => {
     expect(G.coinsFor(0, 1)).toBe(0);
     expect(G.coinsFor(259, 6)).toBe(25 + 10);
-    const g = run({ score: 259, wave: 6, coins: 7 });
+    const g = run({ score: 259, wave: 4, coins: 7 });
     g.zombies.push(zombie({ y: G.PLAYER_Y - 8 }));
     G.update(g, 0);
     expect(g.state).toBe('gameover');
-    expect(g.earned).toBe(35);
-    expect(g.coins).toBe(42);
+    expect(g.earned).toBe(31);
+    expect(g.coins).toBe(38);
     // coins and upgrades outlive the run; the payout line does not
     g.upgrades.wall = 2;
     G.toMenu(g);
-    expect(g.coins).toBe(42);
+    expect(g.coins).toBe(38);
     expect(g.earned).toBe(0);
     expect(g.upgrades.wall).toBe(2);
   });
@@ -578,5 +578,307 @@ describe('coins and upgrades', () => {
     expect(g.score).toBe(30);
     expect(g.coins).toBe(20);
     expect(g.upgrades.troops).toBe(2);
+  });
+});
+
+describe('daily challenge', () => {
+  const DAY = 20766;
+  // Play a run hands-off for a while and note what came down the bridge. The
+  // squad is kept at the given size, so the run lasts.
+  const play = (g, seconds, troops = 12) => {
+    const seen = { gates: [], zombies: [] };
+    for (let t = 0; t < seconds; t += 0.05) {
+      const gates = g.gates.length, zombies = g.zombies.length;
+      g.player.troops = troops;
+      G.update(g, 0.05);
+      if (g.state !== 'playing') break;
+      if (g.gates.length > gates) seen.gates.push(g.gates[g.gates.length - 1]);
+      if (g.zombies.length > zombies) seen.zombies.push(g.zombies[g.zombies.length - 1]);
+    }
+    return {
+      gates: seen.gates.map((p) => p.left.label + ' | ' + p.right.label),
+      zombies: seen.zombies.map((z) => [z.kind, z.x, z.speed]),
+    };
+  };
+  const daily = (day = DAY) => {
+    const g = G.newGame();
+    G.resetRun(g, day);
+    return g;
+  };
+  // A squad that holds its fire, so every zombie that arrives is seen by play().
+  const silent = (g) => Object.assign(g, { fireTimer: 1e9 });
+
+  test('days are UTC days', () => {
+    const midnight = Date.UTC(2026, 10, 9);
+    expect(G.dayOf(midnight)).toBe(DAY);
+    expect(G.dayOf(midnight - 1)).toBe(DAY - 1);
+    expect(G.dayEnd(DAY)).toBe(midnight + G.DAY_MS);
+  });
+
+  test('the same day gives the same gates and horde, whatever Math.random does', () => {
+    const first = play(silent(daily()), 40);
+    random(0.99);
+    const second = play(silent(daily()), 40);
+    expect(first.gates.length).toBeGreaterThan(5);
+    expect(first.zombies.length).toBeGreaterThan(20);
+    expect(second).toEqual(first);
+  });
+
+  test('another day, or an ordinary run, is different', () => {
+    const today = play(silent(daily()), 40);
+    const tomorrow = play(silent(daily(DAY + 1)), 40);
+    expect(tomorrow.gates).not.toEqual(today.gates);
+    expect(tomorrow.zombies).not.toEqual(today.zombies);
+    expect(play(silent(run()), 40).zombies).not.toEqual(today.zombies);
+  });
+
+  test('what the squad does to the horde does not change the gates', () => {
+    const calm = play(daily(), 40);
+    const g = daily();
+    g.zombies.push(zombie({ kind: 'summoner', boss: true, summonTimer: 0.01, y: 60 })); // raises walkers
+    const busy = play(g, 40, 30); // a bigger squad: tougher zombies, other kills
+    expect(busy.zombies).not.toEqual(calm.zombies);
+    expect(busy.gates).toEqual(calm.gates);
+  });
+
+  test('a daily run starts without the bought upgrades', () => {
+    const g = G.newGame();
+    g.upgrades = { troops: 3, damage: 2, wall: 4 };
+    G.resetRun(g, DAY);
+    expect(g.daily).toBe(DAY);
+    expect(g.player.troops).toBe(1);
+    expect(g.player.damage).toBe(1);
+    expect(g.banner.text).toBe('DAILY CHALLENGE');
+    G.buildWall(g);
+    expect(g.walls[0].maxHp).toBe(50 + 22);
+    // the next ordinary run has them again
+    G.resetRun(g);
+    expect(g.daily).toBeNull();
+    expect(g.rng).toBeNull();
+    expect(g.player.troops).toBe(4);
+  });
+
+  test('a saved daily run carries on with the same seed', () => {
+    const whole = daily();
+    play(whole, 20);
+    const half = daily();
+    play(half, 10);
+    const loaded = G.newGame();
+    expect(G.loadRun(loaded, G.saveRun(half))).toBe(true);
+    expect(loaded.daily).toBe(DAY);
+    G.resumeRun(loaded);
+    play(loaded, 10);
+    expect(loaded.rng).toEqual(whole.rng);
+  });
+
+  const lose = (g) => {
+    g.zombies.push(zombie({ y: G.PLAYER_Y - 8, troopCost: 99 }));
+    G.update(g, 0);
+    expect(g.state).toBe('gameover');
+    return g;
+  };
+
+  test('the best daily score is kept per day, next to the overall best', () => {
+    const g = daily();
+    g.best = 500;
+    g.score = 120;
+    lose(g);
+    expect(g.dailyBest).toEqual({ day: DAY, best: 120 });
+    expect(g.newDailyBest).toBe(true);
+    expect(g.newBest).toBe(false);
+    // a lower score the same day changes nothing
+    G.resetRun(g, DAY);
+    expect(g.newDailyBest).toBe(false);
+    g.score = 80;
+    lose(g);
+    expect(g.dailyBest).toEqual({ day: DAY, best: 120 });
+    expect(g.newDailyBest).toBe(false);
+    // the next day starts from nothing; an ordinary run never counts
+    G.resetRun(g, DAY + 1);
+    g.score = 30;
+    lose(g);
+    expect(g.dailyBest).toEqual({ day: DAY + 1, best: 30 });
+    G.resetRun(g);
+    g.score = 400;
+    lose(g);
+    expect(g.dailyBest).toEqual({ day: DAY + 1, best: 30 });
+    // a run saved yesterday and finished today does not replace today's best
+    G.resetRun(g, DAY);
+    g.score = 999;
+    lose(g);
+    expect(g.dailyBest).toEqual({ day: DAY + 1, best: 30 });
+    expect(g.newDailyBest).toBe(false);
+    expect(g.best).toBe(999); // it is still a run like any other
+  });
+});
+
+describe('achievements', () => {
+  const quiet = (over) => run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9, ...over });
+  const bullet = (wkey) => ({ x: G.ROAD_MID, y: 100, dmg: 1, vx: 0, pierce: 0, aoe: 0, wkey });
+  const coinsOf = (...ids) => ids.reduce((sum, id) => sum + G.ACHIEVEMENTS.find((a) => a.id === id).coins, 0);
+
+  test('ids are unique and every one pays coins', () => {
+    const ids = G.ACHIEVEMENTS.map((a) => a.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const a of G.ACHIEVEMENTS) {
+      expect(a.coins).toBeGreaterThan(0);
+      expect(a.label && a.desc).toBeTruthy();
+    }
+  });
+
+  test('a fresh run unlocks nothing', () => {
+    const g = quiet();
+    G.update(g, 0);
+    expect(g.achieved).toEqual({});
+    expect(g.events.achieved).toEqual([]);
+  });
+
+  test('an achievement unlocks once, pays its coins and is reported for one frame', () => {
+    const g = quiet({ wave: 5, hits: 1 });
+    G.update(g, 0);
+    expect(g.events.achieved).toEqual(['wave5']);
+    expect(g.achieved).toEqual({ wave5: true });
+    expect(g.coins).toBe(coinsOf('wave5'));
+    G.update(g, 0);
+    expect(g.events.achieved).toEqual([]);
+    expect(g.coins).toBe(coinsOf('wave5'));
+    // it stays unlocked, and unpaid, in every later run
+    G.resetRun(g);
+    g.wave = 5;
+    g.hits = 1;
+    G.update(g, 0);
+    expect(g.events.achieved).toEqual([]);
+    expect(g.coins).toBe(coinsOf('wave5'));
+  });
+
+  test('reaching wave 5 before a zombie gets through', () => {
+    const g = quiet({ wave: 4 });
+    g.player.troops = 5;
+    g.waveTimer = 0;
+    G.update(g, 0);
+    expect(g.achieved.untouched).toBe(true);
+    const hurt = quiet({ wave: 4 });
+    hurt.player.troops = 5;
+    hurt.zombies.push(zombie({ y: G.PLAYER_Y - 8 }));
+    G.update(hurt, 0);
+    expect(hurt.hits).toBe(1);
+    hurt.waveTimer = 0;
+    G.update(hurt, 0);
+    expect(hurt.achieved).toEqual({ wave5: true });
+  });
+
+  test('boss kills: any boss, the rifle, a colossus', () => {
+    const kill = (kind, wkey) => {
+      const g = quiet();
+      g.zombies.push(zombie({ kind, boss: true, hp: 1 }));
+      g.bullets.push(bullet(wkey));
+      G.update(g, 0);
+      return Object.keys(g.achieved).sort();
+    };
+    expect(kill('brute', 'smg')).toEqual(['boss']);
+    expect(kill('brute', 'rifle')).toEqual(['boss', 'rifleBoss']);
+    expect(kill('colossus', 'sniper')).toEqual(['boss', 'colossus']);
+    // an ordinary zombie is no boss
+    const g = quiet();
+    g.zombies.push(zombie({ hp: 1 }));
+    g.bullets.push(bullet('rifle'));
+    G.update(g, 0);
+    expect(g.achieved).toEqual({});
+  });
+
+  test('a boss that reaches the squad is not a kill', () => {
+    const g = quiet();
+    g.player.troops = 9;
+    g.zombies.push(zombie({ kind: 'brute', boss: true, y: G.PLAYER_Y - 8 }));
+    G.update(g, 0);
+    expect(g.achieved).toEqual({});
+  });
+
+  test('run totals: kills, score, squad size, walls, weapons', () => {
+    const got = (setup) => {
+      const g = quiet();
+      setup(g);
+      G.update(g, 0);
+      return Object.keys(g.achieved);
+    };
+    expect(got((g) => { g.kills = 249; })).toEqual([]);
+    expect(got((g) => { g.kills = 250; })).toEqual(['kills250']);
+    expect(got((g) => { g.score = 1000; })).toEqual(['score1000']);
+    expect(got((g) => { g.player.troops = G.MAX_TROOPS; })).toEqual(['fullSquad']);
+    expect(got((g) => { G.buildWall(g); G.buildWall(g); })).toEqual([]);
+    expect(got((g) => { G.buildWall(g); G.buildWall(g); G.buildWall(g); })).toEqual(['fortress']);
+    // every weapon: the rifle is carried from the start, the rest come from gates
+    const g = quiet();
+    const others = Object.keys(G.WEAPONS).filter((k) => k !== 'rifle');
+    others.forEach((k, i) => {
+      expect(g.achieved.arsenal).toBeUndefined();
+      g.gates = [gate({ type: 'weapon', v: k }, {})];
+      g.player.x = G.ROAD_MID - 60;
+      G.update(g, 0);
+      expect(Object.keys(g.guns)).toHaveLength(i + 2);
+    });
+    expect(g.achieved.arsenal).toBe(true);
+  });
+
+  test('finishing a daily challenge', () => {
+    const end = (g) => {
+      g.zombies.push(zombie({ y: G.PLAYER_Y - 8, troopCost: 99 }));
+      G.update(g, 0);
+      return g;
+    };
+    expect(end(quiet()).achieved).toEqual({});
+    const g = G.newGame();
+    G.resetRun(g, 20766);
+    end(g);
+    expect(g.achieved).toEqual({ daily: true });
+    expect(g.events.achieved).toEqual(['daily']);
+    expect(g.coins).toBe(g.earned + coinsOf('daily'));
+  });
+
+  test('achievements and the daily best save and load', () => {
+    const g = G.newGame();
+    g.achieved = { boss: true, wave5: true };
+    g.dailyBest = { day: 20766, best: 140 };
+    const saved = JSON.parse(G.saveMeta(g));
+    expect(saved.achieved).toEqual(['wave5', 'boss']);
+    expect(saved.daily).toEqual({ day: 20766, best: 140 });
+    const fresh = G.newGame();
+    fresh.achieved = { daily: true }; // unlocked before the stored copy arrived
+    expect(G.loadMeta(fresh, JSON.stringify(saved))).toBe(true);
+    expect(fresh.achieved).toEqual({ daily: true, boss: true, wave5: true });
+    expect(fresh.dailyBest).toEqual({ day: 20766, best: 140 });
+  });
+
+  test('loadMeta takes what an older version stored, and ignores junk', () => {
+    const old = G.newGame();
+    expect(G.loadMeta(old, JSON.stringify({ v: 1, coins: 9, upgrades: { troops: 1 } }))).toBe(true);
+    expect(old.achieved).toEqual({});
+    expect(old.dailyBest).toEqual({ day: 0, best: 0 });
+    const g = G.newGame();
+    g.dailyBest = { day: 20766, best: 50 };
+    const junk = { v: 1, achieved: ['boss', 'nope', 7, '__proto__'], daily: { day: 'x', best: -4 } };
+    expect(G.loadMeta(g, JSON.stringify(junk))).toBe(true);
+    expect(g.achieved).toEqual({ boss: true });
+    expect(g.dailyBest).toEqual({ day: 20766, best: 50 });
+    expect(G.loadMeta(g, JSON.stringify({ v: 1, achieved: 'boss', daily: 5 }))).toBe(true);
+    expect(g.achieved).toEqual({ boss: true });
+    // an older day never replaces a newer one; the same day keeps the higher score
+    G.loadMeta(g, JSON.stringify({ v: 1, daily: { day: 20765, best: 900 } }));
+    G.loadMeta(g, JSON.stringify({ v: 1, daily: { day: 20766, best: 40 } }));
+    expect(g.dailyBest).toEqual({ day: 20766, best: 50 });
+    G.loadMeta(g, JSON.stringify({ v: 1, daily: { day: 20766, best: 70 } }));
+    expect(g.dailyBest).toEqual({ day: 20766, best: 70 });
+  });
+
+  test('loading a saved run leaves achievements and the daily best alone', () => {
+    const old = run({ score: 30 });
+    old.achieved = { boss: true };
+    old.dailyBest = { day: 5, best: 5 };
+    const g = G.newGame();
+    g.achieved = { wave5: true };
+    g.dailyBest = { day: 20766, best: 50 };
+    expect(G.loadRun(g, G.saveRun(old))).toBe(true);
+    expect(g.achieved).toEqual({ wave5: true });
+    expect(g.dailyBest).toEqual({ day: 20766, best: 50 });
   });
 });

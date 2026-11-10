@@ -1,14 +1,17 @@
 // Horde Survival global leaderboard API (Cloudflare Worker + D1).
 //
-//   POST /scores   { playerId, score, wave, elapsed, name? }   -> standing
-//   POST /name     { playerId, name }                          -> { name }
-//   GET  /rank?player=<id>                                     -> standing
-//   GET  /leaderboard?board=all|week&player=<id>&limit=20      -> { board, top, me, total, endsAt? }
+//   POST /scores   { playerId, score, wave, elapsed, name?, daily? }  -> standing
+//   POST /name     { playerId, name }                                 -> { name }
+//   GET  /rank?player=<id>                                            -> standing
+//   GET  /leaderboard?board=all|week|day&player=<id>&limit=20         -> { board, top, me, total, endsAt? }
 //
-//   standing = { name, all: { best, rank, total }, week: { id, endsAt, best, rank, total } }
+//   standing = { name, all: { best, rank, total }, week: { id, endsAt, best, rank, total }, day: { same as week } }
 //
-// There are two boards: all-time bests, and bests for the current week (weeks
-// start Monday 00:00 UTC). A scheduled run clears out weeks that are over.
+// There are three boards: all-time bests, bests for the current week (weeks
+// start Monday 00:00 UTC), and the daily challenge: bests for the current UTC
+// day, counting only runs of that day's challenge (the app marks those with
+// `daily`, the day number). A challenge run counts for the other two boards
+// as well. A scheduled run clears out weeks and days that are over.
 //
 // There is no admin endpoint. Removing an entry (and banning its player id)
 // is done from the command line: see scripts/remove-score.js.
@@ -33,6 +36,20 @@ const WEEK_MS = 7 * 86_400_000;
 const WEEK_OFFSET = 4 * 86_400_000; // 1970-01-05 was a Monday
 export const weekOf = (ms) => Math.floor((ms - WEEK_OFFSET) / WEEK_MS);
 export const weekEnd = (week) => (week + 1) * WEEK_MS + WEEK_OFFSET;
+
+// ---------- Days (the daily challenge) ----------
+const DAY_MS = 86_400_000;
+export const dayOf = (ms) => Math.floor(ms / DAY_MS); // must match game/core.js
+export const dayEnd = (day) => (day + 1) * DAY_MS;
+// A challenge run that ends just after midnight still counts for the day it
+// was started on. No run is longer than MAX_ELAPSED, so that is the limit.
+const DAY_GRACE_MS = MAX_ELAPSED * 1000;
+// The day a run submitted as `daily` counts for, or null if that day is over.
+function challengeDay(daily, now) {
+  const today = dayOf(now);
+  if (daily === today) return today;
+  return daily === today - 1 && now - today * DAY_MS <= DAY_GRACE_MS ? daily : null;
+}
 
 // ---------- Anonymous names ----------
 // The app shows the same two lists in its name picker: keep them in step
@@ -102,27 +119,39 @@ async function readJson(request) {
   }
 }
 
-// Where a best score stands on a board (week = null for the all-time board).
-// Standard competition ranking: equal scores share a rank. No score, no rank.
-async function place(db, week, best) {
+// The boards that start over: one period (a week, a day) of a table that
+// holds a row per period and player. `key` is the current period.
+const periodBoard = {
+  week: (now) => ({ table: "weekly", col: "week", key: weekOf(now), endsAt: weekEnd(weekOf(now)) }),
+  day: (now) => ({ table: "daily", col: "day", key: dayOf(now), endsAt: dayEnd(dayOf(now)) }),
+};
+
+// Where a best score stands on a board (period = null for the all-time
+// board). Standard competition ranking: equal scores share a rank. No score,
+// no rank.
+async function place(db, period, best) {
   const count = "SELECT COUNT(*) AS total, COALESCE(SUM(best > ?1), 0) AS above FROM ";
-  const row = await (week === null
+  const row = await (period === null
     ? db.prepare(count + "players").bind(best ?? null)
-    : db.prepare(count + "weekly WHERE week = ?2").bind(best ?? null, week)
+    : db.prepare(count + `${period.table} WHERE ${period.col} = ?2`).bind(best ?? null, period.key)
   ).first();
   return { best: best ?? 0, rank: best == null ? null : row.above + 1, total: row.total };
 }
 
 async function standing(db, playerId, now) {
-  const week = weekOf(now);
+  const week = periodBoard.week(now), day = periodBoard.day(now);
+  // Every accepted run makes a players row, so a player with a weekly or
+  // daily best always has one to join from.
   const row = await db.prepare(
-    `SELECT p.name, p.best, w.best AS week_best FROM players p
-     LEFT JOIN weekly w ON w.id = p.id AND w.week = ?2 WHERE p.id = ?1`
-  ).bind(playerId, week).first();
+    `SELECT p.name, p.best, w.best AS week_best, d.best AS day_best FROM players p
+     LEFT JOIN weekly w ON w.id = p.id AND w.week = ?2
+     LEFT JOIN daily d ON d.id = p.id AND d.day = ?3 WHERE p.id = ?1`
+  ).bind(playerId, week.key, day.key).first();
   return {
     name: row ? row.name : nameFor(playerId),
     all: await place(db, null, row?.best),
-    week: { id: week, endsAt: weekEnd(week), ...(await place(db, week, row?.week_best)) },
+    week: { id: week.key, endsAt: week.endsAt, ...(await place(db, week, row?.week_best)) },
+    day: { id: day.key, endsAt: day.endsAt, ...(await place(db, day, row?.day_best)) },
   };
 }
 
@@ -130,9 +159,10 @@ async function standing(db, playerId, now) {
 async function submit(request, env) {
   const { body, error } = await readJson(request);
   if (error) return error;
-  const { playerId, score, wave, elapsed, name } = body;
+  const { playerId, score, wave, elapsed, name, daily } = body;
   if (typeof playerId !== "string" || !ID_RE.test(playerId)) return json({ error: "bad player id" }, 400);
   if (name !== undefined && !validName(name)) return json({ error: "bad name" }, 400);
+  if (daily !== undefined && !Number.isInteger(daily)) return json({ error: "bad day" }, 400);
   if (!plausible({ score, wave, elapsed })) return json({ error: "rejected" }, 422);
 
   const now = Date.now();
@@ -164,6 +194,20 @@ async function submit(request, env) {
        best = MAX(best, excluded.best)`
   ).bind(weekOf(now), playerId, score, wave, now).run();
 
+  // A daily challenge run also counts for its day. One that arrives after
+  // that day's board has closed is still a run like any other, so it keeps
+  // its place on the two boards above.
+  const day = daily === undefined ? null : challengeDay(daily, now);
+  if (day !== null) {
+    await env.DB.prepare(
+      `INSERT INTO daily (day, id, best, wave, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+       ON CONFLICT (day, id) DO UPDATE SET
+         wave = CASE WHEN excluded.best > best THEN excluded.wave ELSE wave END,
+         updated_at = CASE WHEN excluded.best > best THEN excluded.updated_at ELSE updated_at END,
+         best = MAX(best, excluded.best)`
+    ).bind(day, playerId, score, wave, now).run();
+  }
+
   return json(await standing(env.DB, playerId, now));
 }
 
@@ -187,16 +231,17 @@ async function rank(url, env) {
 
 async function leaderboard(url, env) {
   const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(url.searchParams.get("limit"), 10) || 20));
-  const week = url.searchParams.get("board") === "week" ? weekOf(Date.now()) : null;
+  const which = url.searchParams.get("board");
+  const period = Object.hasOwn(periodBoard, which) ? periodBoard[which](Date.now()) : null;
   const player = url.searchParams.get("player");
   const id = player && ID_RE.test(player) ? player : null;
 
-  const { results } = await (week === null
+  const { results } = await (period === null
     ? env.DB.prepare("SELECT id, name, best, wave FROM players ORDER BY best DESC, updated_at ASC LIMIT ?").bind(limit)
     : env.DB.prepare(
-        `SELECT w.id, p.name, w.best, w.wave FROM weekly w JOIN players p ON p.id = w.id
-         WHERE w.week = ? ORDER BY w.best DESC, w.updated_at ASC LIMIT ?`
-      ).bind(week, limit)
+        `SELECT b.id, p.name, b.best, b.wave FROM ${period.table} b JOIN players p ON p.id = b.id
+         WHERE b.${period.col} = ? ORDER BY b.best DESC, b.updated_at ASC LIMIT ?`
+      ).bind(period.key, limit)
   ).all();
 
   // Standard competition ranking: equal scores share a rank. The asking
@@ -210,18 +255,18 @@ async function leaderboard(url, env) {
     return row;
   });
 
-  const mine = !id ? null : await (week === null
+  const mine = !id ? null : await (period === null
     ? env.DB.prepare("SELECT name, best, wave FROM players WHERE id = ?").bind(id)
     : env.DB.prepare(
-        `SELECT p.name, w.best, w.wave FROM players p
-         LEFT JOIN weekly w ON w.id = p.id AND w.week = ?2 WHERE p.id = ?1`
-      ).bind(id, week)
+        `SELECT p.name, b.best, b.wave FROM players p
+         LEFT JOIN ${period.table} b ON b.id = p.id AND b.${period.col} = ?2 WHERE p.id = ?1`
+      ).bind(id, period.key)
   ).first();
-  const placed = await place(env.DB, week, mine?.best);
+  const placed = await place(env.DB, period, mine?.best);
   const me = id && { name: mine ? mine.name : nameFor(id), score: placed.best, wave: mine?.wave ?? 0, rank: placed.rank };
 
-  const body = { board: week === null ? "all" : "week", top, me, total: placed.total };
-  if (week !== null) body.endsAt = weekEnd(week);
+  const body = { board: period === null ? "all" : which, top, me, total: placed.total };
+  if (period !== null) body.endsAt = period.endsAt;
   return json(body);
 }
 
@@ -240,9 +285,11 @@ export default {
     }
   },
 
-  // Cron (see wrangler.jsonc): drop weekly rows from weeks that are over,
-  // keeping the one that just ended.
+  // Cron (see wrangler.jsonc): drop weekly and daily rows from weeks and days
+  // that are over, keeping the one that just ended.
   async scheduled(_event, env) {
-    await env.DB.prepare("DELETE FROM weekly WHERE week < ?").bind(weekOf(Date.now()) - 1).run();
+    const now = Date.now();
+    await env.DB.prepare("DELETE FROM weekly WHERE week < ?").bind(weekOf(now) - 1).run();
+    await env.DB.prepare("DELETE FROM daily WHERE day < ?").bind(dayOf(now) - 1).run();
   },
 };

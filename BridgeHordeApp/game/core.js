@@ -47,6 +47,7 @@ function freshEvents() {
     shot: false, kill: false, bigKill: false, gate: null, troopLost: false,
     waveStart: false, bossSpawn: false, bossDown: false, summon: false,
     pickup: null, boom: false, wallBuilt: false, wallDown: false,
+    achieved: [], // ids of ACHIEVEMENTS unlocked this frame
   };
 }
 
@@ -70,6 +71,13 @@ export function newGame() {
     upgrades: { troops: 0, damage: 0, wall: 0 }, // level per UPGRADES entry
     earned: 0, // coins paid out by the run that just ended
     newBest: false,
+    daily: null, // day number (dayOf) when this run is that day's challenge
+    rng: null, // seeded random streams of a daily run, see rand()
+    dailyBest: { day: 0, best: 0 }, // best daily challenge score, and its day
+    newDailyBest: false,
+    achieved: {}, // id -> true for every unlocked entry of ACHIEVEMENTS
+    hits: 0, // zombies that got through to the squad this run
+    guns: { rifle: true }, // weapons carried this run
     wave: 1,
     waveTimer: WAVE_LEN,
     bossTier: 0,
@@ -81,19 +89,54 @@ export function newGame() {
   };
 }
 
-// Start over, keeping what outlives a run: best score, coins and upgrades.
+// Start over, keeping what outlives a run: best scores, coins, upgrades and
+// achievements.
 function clearRun(g) {
-  const { best, coins, upgrades } = g;
-  Object.assign(g, newGame(), { best, coins, upgrades });
+  const { best, coins, upgrades, dailyBest, achieved } = g;
+  Object.assign(g, newGame(), { best, coins, upgrades, dailyBest, achieved });
 }
 
-export function resetRun(g) {
+// Start a run. Pass a day number (dayOf) to play that day's challenge: its
+// gates and horde come from a seed fixed by the day, and bought upgrades are
+// left out, so everyone faces the same run from the same start.
+export function resetRun(g, daily = null) {
   clearRun(g);
-  g.player.troops += g.upgrades.troops;
-  g.player.damage += g.upgrades.damage;
+  if (daily === null) {
+    g.player.troops += g.upgrades.troops;
+    g.player.damage += g.upgrades.damage;
+  } else {
+    g.daily = daily;
+    g.rng = seedRng(daily);
+  }
   g.state = "playing";
-  g.banner = { text: "WAVE 1", life: 2 };
+  g.banner = { text: daily === null ? "WAVE 1" : "DAILY CHALLENGE", life: 2 };
 }
+
+// ---------- Daily challenge ----------
+// Days are counted in UTC, the same way the leaderboard server counts them.
+export const DAY_MS = 86400000;
+export const dayOf = (ms) => Math.floor(ms / DAY_MS);
+export const dayEnd = (day) => (day + 1) * DAY_MS;
+
+// A daily run draws its gates, its horde and the summoners' walkers from
+// three separate seeded streams, so what one of them has used up (which
+// depends on how the player is doing) never shifts the others. Every other
+// run has no rng and uses Math.random. The stream states are plain numbers,
+// so a saved run carries them along.
+/* eslint-disable no-bitwise */
+function seedRng(seed) {
+  const mix = (n) => Math.imul(seed ^ n, 0x9e3779b1) >>> 0;
+  return { gates: mix(0x1f123bb5), spawns: mix(0x5bd1e995), minions: mix(0x27d4eb2f) };
+}
+function rand(g, stream) {
+  if (!g.rng) return Math.random();
+  // mulberry32
+  let t = (g.rng[stream] = (g.rng[stream] + 0x6d2b79f5) >>> 0);
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+/* eslint-enable no-bitwise */
 
 // Back to the main menu. A paused run is kept so it can be resumed from
 // there; a finished one is cleared away.
@@ -130,9 +173,11 @@ export function loadRun(g, json) {
   const run = saved && saved.v === SAVE_VERSION && saved.run;
   if (!run || !run.player || !Array.isArray(run.zombies) || !Array.isArray(run.gates)) return false;
   const best = Math.max(g.best, Number(run.best) || 0);
-  // coins and upgrades are stored on their own (saveMeta), so the copy inside
-  // a saved run may be out of date and is never used
-  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins: g.coins, upgrades: g.upgrades });
+  // coins, upgrades, achievements and the daily best are stored on their own
+  // (saveMeta), so the copy inside a saved run may be out of date and is
+  // never used
+  const { coins, upgrades, dailyBest, achieved } = g;
+  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins, upgrades, dailyBest, achieved });
   return true;
 }
 
@@ -164,12 +209,42 @@ export function buyUpgrade(g, key) {
   return true;
 }
 
-// Coins and upgrades as a JSON string, and back, for the platform to store.
-// Coins already in g when the stored ones arrive (a run that ended before
-// loading finished) are added on top, not lost.
+// ---------- Achievements ----------
+// Each one unlocks once, for good, and pays its coins on the spot. Those with
+// a `when` are checked against the run every frame; the others are unlocked
+// where the thing happens (a boss kill, the end of a daily run).
+export const ACHIEVEMENTS = [
+  { id: "wave5", label: "HOLD THE LINE", desc: "Reach wave 5", coins: 10, when: (g) => g.wave >= 5 },
+  { id: "wave10", label: "DUG IN", desc: "Reach wave 10", coins: 25, when: (g) => g.wave >= 10 },
+  { id: "wave20", label: "LAST STAND", desc: "Reach wave 20", coins: 60, when: (g) => g.wave >= 20 },
+  { id: "boss", label: "GIANT SLAYER", desc: "Defeat a boss", coins: 10 },
+  { id: "rifleBoss", label: "OLD RELIABLE", desc: "Finish off a boss with the rifle", coins: 20 },
+  { id: "colossus", label: "TITAN DOWN", desc: "Defeat a colossus", coins: 30 },
+  { id: "kills250", label: "EXTERMINATOR", desc: "250 kills in one run", coins: 25, when: (g) => g.kills >= 250 },
+  { id: "score1000", label: "FOUR DIGITS", desc: "Score 1000 in one run", coins: 40, when: (g) => g.score >= 1000 },
+  { id: "fullSquad", label: "FULL HOUSE", desc: "Field a squad of " + MAX_TROOPS, coins: 20, when: (g) => g.player.troops >= MAX_TROOPS },
+  { id: "fortress", label: "FORTRESS", desc: "Have three walls standing", coins: 15, when: (g) => g.walls.length >= WALL_SLOTS.length },
+  { id: "arsenal", label: "ARSENAL", desc: "Carry every weapon in one run", coins: 25, when: (g) => Object.keys(WEAPONS).every((k) => g.guns[k]) },
+  { id: "untouched", label: "UNTOUCHED", desc: "Reach wave 5 with no zombie getting through", coins: 30, when: (g) => g.wave >= 5 && g.hits === 0 },
+  { id: "daily", label: "DAILY DUTY", desc: "Finish a daily challenge", coins: 15 },
+];
+function unlock(g, id) {
+  if (g.achieved[id]) return;
+  g.achieved[id] = true;
+  g.coins += ACHIEVEMENTS.find((a) => a.id === id).coins;
+  g.events.achieved.push(id);
+}
+
+// Coins, upgrades, achievements and the daily best as a JSON string, and
+// back, for the platform to store. Coins already in g when the stored ones
+// arrive (a run that ended before loading finished) are added on top, not
+// lost.
 const META_VERSION = 1;
 export function saveMeta(g) {
-  return JSON.stringify({ v: META_VERSION, coins: g.coins, upgrades: g.upgrades });
+  return JSON.stringify({
+    v: META_VERSION, coins: g.coins, upgrades: g.upgrades,
+    achieved: ACHIEVEMENTS.filter((a) => g.achieved[a.id]).map((a) => a.id), daily: g.dailyBest,
+  });
 }
 export function loadMeta(g, json) {
   let saved;
@@ -181,6 +256,19 @@ export function loadMeta(g, json) {
   for (const key of Object.keys(UPGRADES)) {
     g.upgrades[key] = Math.max(g.upgrades[key], whole(levels[key], UPGRADES[key].costs.length));
   }
+  const ids = Array.isArray(saved.achieved) ? saved.achieved : [];
+  for (const a of ACHIEVEMENTS) if (ids.includes(a.id)) g.achieved[a.id] = true;
+  const daily = saved.daily || {};
+  recordDaily(g, whole(daily.day, Number.MAX_SAFE_INTEGER), whole(daily.best, Number.MAX_SAFE_INTEGER));
+  return true;
+}
+
+// Keep a daily challenge score if it is the best for its day, and that day is
+// not older than the one already held. -> true if it was kept.
+function recordDaily(g, day, score) {
+  const d = g.dailyBest;
+  if (day < d.day || (day === d.day && score <= d.best)) return false;
+  g.dailyBest = { day, best: score };
   return true;
 }
 
@@ -218,7 +306,8 @@ export function formationHalfWidth(g) {
 // Fixed build slots, nearest to the squad first; extra picks repair.
 export const WALL_SLOTS = [PLAYER_Y - 170, PLAYER_Y - 230, PLAYER_Y - 290];
 export function buildWall(g) {
-  const maxHp = Math.round((50 + 22 * g.wave) * (1 + WALL_BONUS * g.upgrades.wall));
+  const level = g.daily === null ? g.upgrades.wall : 0; // a daily run leaves upgrades out
+  const maxHp = Math.round((50 + 22 * g.wave) * (1 + WALL_BONUS * level));
   const used = new Set(g.walls.map((w) => w.y));
   const slot = WALL_SLOTS.find((s) => !used.has(s));
   if (slot !== undefined) {
@@ -246,17 +335,18 @@ function applyGateEffect(g, e) {
   else if (e.type === "wall") buildWall(g);
   else if (e.type === "weapon") {
     g.player.weapon = e.v;
+    g.guns[e.v] = true;
     g.events.pickup = e.v;
   }
 }
 function makeGateEffect(g, allowBad) {
-  if (allowBad && Math.random() < 0.45) {
-    const v = -(2 + Math.floor(Math.random() * 3));
+  if (allowBad && rand(g, "gates") < 0.45) {
+    const v = -(2 + Math.floor(rand(g, "gates") * 3));
     return { label: v + " TROOPS", color: "#e0342f", bad: true, type: "troops", v };
   }
-  const roll = Math.random();
+  const roll = rand(g, "gates");
   if (roll < 0.3) {
-    const v = 2 + Math.floor(Math.random() * 4);
+    const v = 2 + Math.floor(rand(g, "gates") * 4);
     return { label: "+" + v + " TROOPS", color: "#2ecc5e", type: "troops", v };
   } else if (roll < 0.48) {
     return { label: "DMG +1", color: "#3b9bff", type: "damage" };
@@ -271,7 +361,7 @@ function makeGateEffect(g, allowBad) {
   } else if (roll < 0.92) {
     // a different gun, offered right in the gate
     const keys = Object.keys(WEAPONS).filter((k) => k !== g.player.weapon);
-    const k = keys[Math.floor(Math.random() * keys.length)];
+    const k = keys[Math.floor(rand(g, "gates") * keys.length)];
     const w = WEAPONS[k];
     return { label: w.label, color: w.color, type: "weapon", v: k };
   }
@@ -297,7 +387,7 @@ function powerFactor(g) {
   return 1 + dps / 55;
 }
 
-function spawnZombie(g, kind) {
+function spawnZombie(g, kind, stream = "spawns") {
   const st = KIND_STATS[kind];
   // HP tracks the player's firepower; the wave term is capped so falling
   // behind on upgrades doesn't compound into unkillable zombies.
@@ -308,9 +398,9 @@ function spawnZombie(g, kind) {
     hpMul *= 1 + (g.bossTier - 1) * 0.35; // each boss cycle comes back tougher
     scoreVal += (g.bossTier - 1) * 10;
   }
-  const baseSpeed = 40 + Math.random() * 18 + Math.min(32, g.wave * 2.5);
+  const baseSpeed = 40 + rand(g, stream) * 18 + Math.min(32, g.wave * 2.5);
   const z = {
-    x: ROAD_L + 20 + Math.random() * (ROAD_R - ROAD_L - 40),
+    x: ROAD_L + 20 + rand(g, stream) * (ROAD_R - ROAD_L - 40),
     y: -30,
     kind,
     hp: Math.max(1, Math.ceil(hpBase * hpMul)),
@@ -341,9 +431,15 @@ function floatText(g, x, y, str, color) {
   g.floaters.push({ x, y, text: str, color, life: 1 });
 }
 
-function registerKill(g, z) {
+// wkey: the weapon that fired the killing shot
+function registerKill(g, z, wkey) {
   if (z.scored) return;
   z.scored = true;
+  if (z.boss) {
+    unlock(g, "boss");
+    if (wkey === "rifle") unlock(g, "rifleBoss");
+    if (z.kind === "colossus") unlock(g, "colossus");
+  }
   g.kills++;
   g.score += z.scoreVal;
   const col = z.boss ? "#ffd84d" : z.kind === "tank" ? "#7fa08a" : "#5aa832";
@@ -413,7 +509,7 @@ export function update(g, dt, saveBest) {
     let interval = Math.max(0.16, 0.85 - g.wave * 0.055);
     if (bossAlive) interval *= 1.7;
     g.zombieTimer = interval;
-    const roll = Math.random();
+    const roll = rand(g, "spawns");
     const tankP = g.wave >= 5 ? Math.min(0.16, 0.03 + g.wave * 0.012) : 0;
     const runnerP = g.wave >= 3 ? Math.min(0.3, 0.06 + g.wave * 0.02) : 0;
     let kind = "walker";
@@ -472,7 +568,7 @@ export function update(g, dt, saveBest) {
       if (z.summonTimer <= 0) {
         z.summonTimer = 2.5;
         for (let i = 0; i < 2; i++) {
-          const m = spawnZombie(g, "walker");
+          const m = spawnZombie(g, "walker", "minions");
           m.x = Math.max(ROAD_L + 15, Math.min(ROAD_R - 15, z.x + (i ? 26 : -26)));
           m.y = z.y + 6;
         }
@@ -490,7 +586,7 @@ export function update(g, dt, saveBest) {
       const r = z.size + 4;
       if (dx * dx + dy * dy < r * r) {
         z.hp -= b.dmg;
-        if (z.hp <= 0) registerKill(g, z);
+        if (z.hp <= 0) registerKill(g, z, b.wkey);
         if (b.aoe) {
           g.events.boom = true;
           burst(g, b.x, b.y, "#ff8c4d", 18);
@@ -500,7 +596,7 @@ export function update(g, dt, saveBest) {
             const ox = o.x - b.x, oy = o.y - b.y;
             if (ox * ox + oy * oy < b.aoe * b.aoe) {
               o.hp -= splash;
-              if (o.hp <= 0) registerKill(g, o);
+              if (o.hp <= 0) registerKill(g, o, b.wkey);
             }
           }
         }
@@ -522,6 +618,7 @@ export function update(g, dt, saveBest) {
     const breached = z.y >= PLAYER_Y + 20;
     if (!hit && !breached) continue;
     z.hp = 0;
+    g.hits++;
     g.player.troops -= z.troopCost;
     g.shake = z.boss ? 12 : 6;
     const fy = hit ? PLAYER_Y : PLAYER_Y + 20;
@@ -539,9 +636,14 @@ export function update(g, dt, saveBest) {
         g.newBest = true;
         if (saveBest) saveBest(g.best);
       }
+      if (g.daily !== null) {
+        g.newDailyBest = recordDaily(g, g.daily, g.score) && g.score > 0;
+        unlock(g, "daily");
+      }
     }
   }
   g.zombies = g.zombies.filter((z) => z.hp > 0 && z.y < H + 40);
+  for (const a of ACHIEVEMENTS) if (a.when && !g.achieved[a.id] && a.when(g)) unlock(g, a.id);
 
   for (const p of g.particles) {
     p.x += p.vx * dt;

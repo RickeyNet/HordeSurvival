@@ -262,7 +262,9 @@ test('upgrades: coins from a run buy a level, saved across a restart', async () 
   await app.tapBtn(row('troops'));
   expect(g.upgrades.troops).toBe(1);
   expect(g.coins).toBe(3);
-  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({ v: 1, coins: 3, upgrades: { troops: 1, damage: 0, wall: 0 } });
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({
+    v: 1, coins: 3, upgrades: { troops: 1, damage: 0, wall: 0 }, achieved: [], daily: { day: 0, best: 0 },
+  });
   await app.tapBtn(BACK_BTN);
   // "restart the app": the upgrade is still there and the next run uses it
   await ReactTestRenderer.act(() => { app.tree.unmount(); });
@@ -281,4 +283,148 @@ test('upgrades: coins from a run buy a level, saved across a restart', async () 
     app.tree.unmount();
   });
   jest.useRealTimers();
+});
+
+// A zombie already behind the squad that costs every troop: ends the run.
+const fatal = (G) => ({
+  x: G.ROAD_MID, y: G.PLAYER_Y + 25, hp: 1, maxHp: 1, size: 13, speed: 0,
+  wob: 0, kind: 'walker', troopCost: 99, scoreVal: 1,
+});
+
+test('daily challenge: starts from the menu with the day as seed, retries as a daily, asks before replacing a run', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  const haptics = require('react-native-haptic-feedback');
+  jest.useFakeTimers();
+  const app = await mount();
+  const { G, MENU_BTNS, RUN_MENU_BTNS, CONFIRM_BTNS, HOME_BTN } = app;
+  const today = G.dayOf(Date.now());
+  const spy = jest.spyOn(G, 'resetRun');
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  await app.tapBtn(MENU_BTNS.daily);
+  expect(spy).toHaveBeenCalledTimes(1);
+  const g = spy.mock.calls[0][0];
+  expect(spy.mock.calls[0][1]).toBe(today);
+  expect(g.state).toBe('playing');
+  expect(g.daily).toBe(today);
+  expect(g.rng).not.toBeNull();
+  // the run ends: best of the day, the "finish a daily" achievement and its coins are kept
+  g.score = 40;
+  haptics.trigger.mockClear();
+  g.zombies.push(fatal(G));
+  await app.tap(G.W / 2, 60); // a few frames: the game-over screen is drawn, with the unlock toast
+  expect(g.state).toBe('gameover');
+  expect(haptics.trigger).toHaveBeenCalledTimes(1); // one buzz for the game over, none extra for the unlock
+  const award = G.ACHIEVEMENTS.find((a) => a.id === 'daily');
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({
+    v: 1, coins: 4 + award.coins, upgrades: { troops: 0, damage: 0, wall: 0 }, achieved: ['daily'], daily: { day: today, best: 40 },
+  });
+  // retry: another daily run, not an ordinary one
+  await app.tap(G.W / 2, 60);
+  expect(spy).toHaveBeenCalledTimes(2);
+  expect(spy.mock.calls[1][1]).toBe(today);
+  expect(g.daily).toBe(today);
+  expect(g.score).toBe(0);
+  expect(g.dailyBest).toEqual({ day: today, best: 40 });
+  // leave it for the menu (drawn with today's best): both start buttons ask first
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  expect(g.inRun).toBe(true);
+  await app.tapBtn(RUN_MENU_BTNS.daily);
+  await app.tapBtn(CONFIRM_BTNS.cancel);
+  expect(spy).toHaveBeenCalledTimes(2);
+  expect(g.inRun).toBe(true);
+  await app.tapBtn(RUN_MENU_BTNS.fight);
+  await app.tapBtn(CONFIRM_BTNS.yes);
+  expect(spy).toHaveBeenCalledTimes(3);
+  expect(spy.mock.calls[2][1]).toBeNull();
+  expect(g.daily).toBeNull();
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  await app.tapBtn(RUN_MENU_BTNS.daily);
+  await app.tapBtn(CONFIRM_BTNS.yes);
+  expect(spy).toHaveBeenCalledTimes(4);
+  expect(g.daily).toBe(today);
+  // a daily run left behind the menu comes back as one after a restart
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  const stored = JSON.parse(await AsyncStorage.getItem('hordeRun')).run;
+  expect(stored.daily).toBe(today);
+  expect(stored.rng).toEqual(g.rng);
+  spy.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('achievements: unlocked in a run, announced, saved, and listed on their screen', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  const haptics = require('react-native-haptic-feedback');
+  jest.useFakeTimers();
+  let app = await mount();
+  const { G, MENU_BTNS, AWARD_ROWS, AWARDS_BACK_BTN, HOME_BTN } = app;
+  expect(AWARD_ROWS.map((r) => r.id)).toEqual(G.ACHIEVEMENTS.map((a) => a.id));
+  expect(AWARD_ROWS[AWARD_ROWS.length - 1].y + AWARD_ROWS[0].h).toBeLessThan(AWARDS_BACK_BTN.y); // the list fits above Back
+  const spy = jest.spyOn(G, 'resetRun');
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  // the screen, with nothing unlocked: only Back does anything
+  await app.tapBtn(MENU_BTNS.awards);
+  await app.tapBtn(MENU_BTNS.fight);
+  await app.tapBtn(AWARD_ROWS[0]);
+  expect(spy).not.toHaveBeenCalled();
+  await app.tapBtn(AWARDS_BACK_BTN);
+  await app.tapBtn(MENU_BTNS.fight);
+  expect(spy).toHaveBeenCalledTimes(1);
+  const g = spy.mock.calls[0][0];
+  // mid-run unlocks: two at once, saved right away, each shown in turn
+  g.player.troops = G.MAX_TROOPS;
+  g.kills = 250;
+  haptics.trigger.mockClear();
+  await app.drag(1);
+  expect(Object.keys(g.achieved).sort()).toEqual(['fullSquad', 'kills250']);
+  expect(haptics.trigger).toHaveBeenCalledWith('notificationSuccess');
+  const coins = G.ACHIEVEMENTS.filter((a) => g.achieved[a.id]).reduce((sum, a) => sum + a.coins, 0);
+  expect(g.coins).toBe(coins);
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta')).achieved).toEqual(['kills250', 'fullSquad']);
+  await ReactTestRenderer.act(() => { jest.advanceTimersByTime(4000); }); // first toast gives way to the second
+  await ReactTestRenderer.act(() => { jest.advanceTimersByTime(4000); }); // and that one goes too
+  // after a restart they are still there, and the screen draws them as unlocked
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  await ReactTestRenderer.act(() => { app.tree.unmount(); });
+  const load = jest.spyOn(G, 'loadMeta');
+  app = await mount();
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  const g2 = load.mock.calls[0][0];
+  expect(g2).not.toBe(g);
+  expect(g2.achieved).toEqual({ fullSquad: true, kills250: true });
+  expect(g2.coins).toBe(coins);
+  await app.tapBtn(app.RUN_MENU_BTNS.awards);
+  await app.tapBtn(AWARDS_BACK_BTN);
+  spy.mockRestore();
+  load.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('menu buttons do not overlap, with and without a waiting run', () => {
+  const { MENU_BTNS, RUN_MENU_BTNS } = require('../App');
+  const G = require('../game/core');
+  for (const btns of [MENU_BTNS, RUN_MENU_BTNS]) {
+    const list = Object.values(btns);
+    for (const a of list) {
+      expect(a.x).toBeGreaterThanOrEqual(0);
+      expect(a.x + a.w).toBeLessThanOrEqual(G.W);
+      expect(a.y + a.h).toBeLessThanOrEqual(G.H);
+      for (const b of list) {
+        if (a === b) continue;
+        const apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+        expect(apart).toBe(true);
+      }
+    }
+  }
 });

@@ -83,6 +83,8 @@ const fontFamily = Platform.select({ ios: "Helvetica", default: "sans-serif" });
 const fonts = {
   hud: matchFont({ fontFamily, fontSize: 20, fontWeight: "bold" }),
   small: matchFont({ fontFamily, fontSize: 16 }),
+  strong: matchFont({ fontFamily, fontSize: 16, fontWeight: "bold" }),
+  tiny: matchFont({ fontFamily, fontSize: 13 }),
   gate: matchFont({ fontFamily, fontSize: 22, fontWeight: "bold" }),
   float: matchFont({ fontFamily, fontSize: 22, fontWeight: "bold" }),
   title: matchFont({ fontFamily, fontSize: 40, fontWeight: "bold" }),
@@ -450,13 +452,18 @@ function drawHUD(c, g) {
   const info =
     G.WEAPONS[g.player.weapon].label + "   troops " + g.player.troops + "   dmg " + g.player.damage + "   rate " + g.player.fireRate.toFixed(1);
   text(c, info, G.W / 2 - textWidth(fonts.small, info, 16) / 2, G.H - 14, fill("#9fd4ff"), fonts.small);
+  if (g.daily !== null) centerText(c, "DAILY CHALLENGE", G.H - 36, fonts.tiny, 13, DAILY_COLOR);
 }
 
 // ---------- Menu buttons (world coordinates) ----------
+const DAILY_COLOR = "#4dd0c4"; // everything that marks the daily challenge
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
-export const MENU_BTNS = { fight: btn(310, 64), shop: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+const half = (x, y, h) => ({ x, y, w: 172, h });
+// Main menu: the buttons that start a run, then two rows of two.
+const menuGrid = (y) => ({ shop: half(24, y, 54), awards: half(204, y, 54), board: half(24, y + 68, 54), settings: half(204, y + 68, 54) });
+export const MENU_BTNS = { fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
 // Menu while a run is waiting: Resume takes the top spot, the rest move down.
-export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), shop: btn(460, 54), board: btn(528, 54), settings: btn(596, 54) };
+export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
 const RUN_KEY = "hordeRun";
 const META_KEY = "hordeMeta"; // coins and upgrades (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
@@ -464,9 +471,12 @@ const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
 export const BACK_BTN = btn(G.H - 120, 50); // settings screen
-// Leaderboard screen: two tabs on top, two buttons at the bottom.
-const half = (x, y, h) => ({ x, y, w: 172, h });
-export const BOARD_BTNS = { all: half(24, 104, 36), week: half(204, 104, 36), name: half(24, 654, 48), close: half(204, 654, 48) };
+// Leaderboard screen: three tabs on top, two buttons at the bottom.
+const tabBtn = (i) => ({ x: 24 + i * 120, y: 104, w: 112, h: 36 });
+export const BOARD_BTNS = { all: tabBtn(0), week: tabBtn(1), day: tabBtn(2), name: half(24, 654, 48), close: half(204, 654, 48) };
+// Achievements screen: one row per entry in G.ACHIEVEMENTS.
+export const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({ ...a, x: 24, y: 112 + i * 41, w: G.W - 48, h: 37 }));
+export const AWARDS_BACK_BTN = btn(G.H - 68, 48);
 // Name picker: a row of step buttons per part of the name (see names.js).
 const step = (x, row, field, delta, label) => ({ x, y: 200 + row * 80, w: 56, h: 56, field, delta, label });
 export const NAME_STEPS = [
@@ -489,7 +499,8 @@ const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.
 function centerText(c, str, y, font, size, color) {
   text(c, str, G.W / 2 - textWidth(font, str, size) / 2, y, fill(color), font);
 }
-function drawButton(c, b, label, primary) {
+// k scales the label of a secondary button down (see drawMenu).
+function drawButton(c, b, label, primary, k = 1) {
   const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 12, 12);
   const mid = b.x + b.w / 2;
   if (primary) {
@@ -498,7 +509,7 @@ function drawButton(c, b, label, primary) {
   } else {
     c.drawRRect(rr, fill("rgba(255,255,255,0.12)"));
     c.drawRRect(rr, stroke("#9fd4ff", 2));
-    text(c, label, mid - textWidth(fonts.hud, label, 20) / 2, b.y + b.h / 2 + 7, fill("#9fd4ff"), fonts.hud);
+    scaledText(c, label, mid, b.y + b.h / 2 + 7 * k, fonts.hud, 20, fill("#9fd4ff"), k);
   }
 }
 
@@ -512,26 +523,67 @@ function drawCoins(c, cx, y, amount, font, size, color) {
   text(c, str, x + r * 2 + 6, y, fill(color), font);
 }
 
+// The daily challenge button: two lines, with today's best once there is one.
+function drawDailyButton(c, b, g) {
+  const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 12, 12);
+  c.drawRRect(rr, fill("rgba(77,208,196,0.14)"));
+  c.drawRRect(rr, stroke(DAILY_COLOR, 2));
+  const d = g.dailyBest;
+  const played = d.day === G.dayOf(Date.now()) && d.best > 0;
+  centerText(c, "DAILY CHALLENGE", b.y + 24, fonts.hud, 20, DAILY_COLOR);
+  centerText(c, played ? "Your best today: " + d.best : "One run a day, the same for everyone", b.y + 44, fonts.tiny, 13, "#c8d3e0");
+}
+
 function drawMenu(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
   centerText(c, "HORDE SURVIVAL", 208, fonts.title, 40, "#ffffff");
   drawCoins(c, G.W / 2, 286, g.coins, fonts.sub, 21, "#f5c211");
+  const btns = g.inRun ? RUN_MENU_BTNS : MENU_BTNS;
   if (g.inRun) {
-    centerText(c, "Wave " + g.wave + "  -  Score " + g.score, 252, fonts.sub, 21, "#9fd4ff");
-    drawButton(c, RUN_MENU_BTNS.resume, "RESUME", true);
-    drawButton(c, RUN_MENU_BTNS.fight, "NEW RUN");
-    drawButton(c, RUN_MENU_BTNS.shop, "UPGRADES");
-    drawButton(c, RUN_MENU_BTNS.board, "LEADERBOARDS");
-    drawButton(c, RUN_MENU_BTNS.settings, "SETTINGS");
-    return;
+    centerText(c, (g.daily === null ? "" : "Daily  -  ") + "Wave " + g.wave + "  -  Score " + g.score, 252, fonts.sub, 21, "#9fd4ff");
+    drawButton(c, btns.resume, "RESUME", true);
+    drawButton(c, btns.fight, "NEW RUN");
+  } else {
+    centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
+    drawButton(c, btns.fight, "FIGHT HORDE", true);
+    centerText(c, "Drag to move - you fire automatically", 618, fonts.small, 16, "#c8d3e0");
+    centerText(c, "Steer into gates - avoid the red ones!", 642, fonts.small, 16, "#c8d3e0");
   }
-  centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
-  drawButton(c, MENU_BTNS.fight, "FIGHT HORDE", true);
-  drawButton(c, MENU_BTNS.shop, "UPGRADES");
-  drawButton(c, MENU_BTNS.board, "LEADERBOARDS");
-  drawButton(c, MENU_BTNS.settings, "SETTINGS");
-  centerText(c, "Drag to move - you fire automatically", 618, fonts.small, 16, "#c8d3e0");
-  centerText(c, "Steer into gates - avoid the red ones!", 642, fonts.small, 16, "#c8d3e0");
+  drawDailyButton(c, btns.daily, g);
+  // the four half-width buttons share one label size: the largest at which the longest fits
+  const grid = { shop: "UPGRADES", awards: "ACHIEVEMENTS", board: "LEADERBOARDS", settings: "SETTINGS" };
+  const widest = Math.max(...Object.values(grid).map((label) => textWidth(fonts.hud, label, 20)));
+  const k = Math.min(1, (btns.shop.w - 28) / widest);
+  for (const key of Object.keys(grid)) drawButton(c, btns[key], grid[key], false, k);
+}
+
+function drawAwards(c, g) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.94)"));
+  centerText(c, "ACHIEVEMENTS", 64, fonts.title, 40, "#ffffff");
+  const done = AWARD_ROWS.filter((r) => g.achieved[r.id]).length;
+  centerText(c, done + " of " + AWARD_ROWS.length + " unlocked", 94, fonts.small, 16, "#9fd4ff");
+  for (const r of AWARD_ROWS) {
+    const on = !!g.achieved[r.id];
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(r.x, r.y, r.w, r.h), 10, 10), fill(on ? "rgba(245,194,17,0.14)" : "rgba(255,255,255,0.07)"));
+    // a pip that fills in once the achievement is unlocked
+    if (on) c.drawCircle(r.x + 20, r.y + r.h / 2, 7, fill("#f5c211"));
+    else c.drawCircle(r.x + 20, r.y + r.h / 2, 6, stroke("#8b93a3", 2));
+    text(c, r.label, r.x + 38, r.y + 16, fill(on ? "#f5c211" : "#ffffff"), fonts.strong);
+    text(c, r.desc, r.x + 38, r.y + 31, fill(on ? "#c8d3e0" : "#8b93a3"), fonts.tiny);
+    drawCoins(c, r.x + r.w - 34, r.y + r.h / 2 + 6, r.coins, fonts.small, 16, on ? "#f5c211" : "#8b93a3");
+  }
+  drawButton(c, AWARDS_BACK_BTN, "BACK");
+}
+
+// Shown for a few seconds when an achievement unlocks. a: an entry of G.ACHIEVEMENTS.
+function drawToast(c, a) {
+  const msg = a.label + "   +" + a.coins;
+  const w = Math.max(textWidth(fonts.hud, msg, 20), textWidth(fonts.tiny, "ACHIEVEMENT UNLOCKED", 13)) + 40;
+  const rr = Skia.RRectXY(Skia.XYWHRect(G.W / 2 - w / 2, 56, w, 52), 12, 12);
+  c.drawRRect(rr, fill("rgba(5,8,14,0.88)"));
+  c.drawRRect(rr, stroke("#f5c211", 2));
+  centerText(c, "ACHIEVEMENT UNLOCKED", 75, fonts.tiny, 13, "#c8d3e0");
+  centerText(c, msg, 98, fonts.hud, 20, "#f5c211");
 }
 
 function drawShop(c, g) {
@@ -569,13 +621,14 @@ function drawShop(c, g) {
   drawButton(c, BACK_BTN, "BACK");
 }
 
-function drawConfirmNew(c, g) {
+// kind: "run" or "daily", the run that would replace the waiting one.
+function drawConfirmNew(c, g, kind) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
-  centerText(c, "NEW RUN?", 236, fonts.title, 40, "#ffffff");
+  centerText(c, kind === "daily" ? "START DAILY?" : "NEW RUN?", 236, fonts.title, 40, "#ffffff");
   centerText(c, "Your current run will be lost.", 284, fonts.sub, 21, "#9fd4ff");
   centerText(c, "Wave " + g.wave + "  -  Score " + g.score, 316, fonts.small, 16, "#c8d3e0");
   drawButton(c, CONFIRM_BTNS.cancel, "KEEP MY RUN", true);
-  drawButton(c, CONFIRM_BTNS.yes, "START NEW RUN");
+  drawButton(c, CONFIRM_BTNS.yes, kind === "daily" ? "START DAILY RUN" : "START NEW RUN");
 }
 
 function drawSettings(c) {
@@ -602,14 +655,30 @@ export function fmtLeft(ms) {
   return d > 0 ? d + "d " + h + "h" : h > 0 ? h + "h " + m + "m" : m + "m";
 }
 
-// board: { tab: "all" | "week", status: "loading" | "ready" | "error" | "off", data }
+const BOARD_TABS = {
+  all: { label: "ALL TIME", empty: "No scores yet - be the first!", none: "(no score yet)" },
+  week: { label: "THIS WEEK", empty: "No scores yet this week!", none: "(no score this week)" },
+  day: { label: "TODAY", empty: "No daily scores yet today!", none: "(no daily score today)" },
+};
+function drawTab(c, b, label, on) {
+  const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 10, 10);
+  if (on) {
+    c.drawRRect(rr, fill("#f5c211"));
+  } else {
+    c.drawRRect(rr, fill("rgba(255,255,255,0.12)"));
+    c.drawRRect(rr, stroke("#9fd4ff", 2));
+  }
+  text(c, label, b.x + b.w / 2 - textWidth(fonts.strong, label, 16) / 2, b.y + b.h / 2 + 6, fill(on ? "#1a1405" : "#9fd4ff"), fonts.strong);
+}
+
+// board: { tab: "all" | "week" | "day", status: "loading" | "ready" | "error" | "off", data }
+// The "day" tab is the daily challenge: only daily runs count there.
 function drawBoard(c, board) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
   centerText(c, "LEADERBOARD", 84, fonts.title, 40, "#ffffff");
-  const week = board.tab === "week";
+  const words = BOARD_TABS[board.tab] || BOARD_TABS.all;
   if (board.status !== "off") {
-    drawButton(c, BOARD_BTNS.all, "ALL TIME", !week);
-    drawButton(c, BOARD_BTNS.week, "THIS WEEK", week);
+    for (const key of Object.keys(BOARD_TABS)) drawTab(c, BOARD_BTNS[key], BOARD_TABS[key].label, key === board.tab);
   }
   const msg = {
     loading: "Loading...",
@@ -622,7 +691,7 @@ function drawBoard(c, board) {
     const { top, me, total, endsAt } = board.data;
     const info = total + (total === 1 ? " player" : " players") + (endsAt ? "  -  resets in " + fmtLeft(endsAt - Date.now()) : "");
     centerText(c, info, 164, fonts.small, 16, "#c8d3e0");
-    if (!top.length) centerText(c, week ? "No scores yet this week!" : "No scores yet - be the first!", G.H / 2, fonts.sub, 21, "#9fd4ff");
+    if (!top.length) centerText(c, words.empty, G.H / 2, fonts.sub, 21, "#9fd4ff");
     top.forEach((r, i) => {
       const y = 194 + i * 30;
       if (r.you) rect(c, 24, y - 21, G.W - 48, 28, fill("rgba(245,194,17,0.18)"));
@@ -633,7 +702,7 @@ function drawBoard(c, board) {
       text(c, sc, G.W - 34 - textWidth(fonts.small, sc, 16), y, fill(col), fonts.small);
     });
     if (me) {
-      const youLine = "You: " + me.name + (me.rank ? "   #" + me.rank + "   " + me.score : week ? "   (no score this week)" : "   (no score yet)");
+      const youLine = "You: " + me.name + (me.rank ? "   #" + me.rank + "   " + me.score : "   " + words.none);
       centerText(c, youLine, 640, fonts.small, 16, "#f5c211");
       drawButton(c, BOARD_BTNS.name, "CHANGE NAME");
     }
@@ -680,17 +749,21 @@ const fmtTime = (sec) => {
 };
 
 // Leaderboard places for the game-over screen. st: a standing from
-// LB.recordRun. Empty when the player has no rank to show.
-export function rankLine(st) {
+// LB.recordRun. Empty when the player has no rank to show. After a daily
+// run, today's place takes the spot of the weekly one.
+export function rankLine(st, daily) {
   const parts = [];
+  if (daily && st.day && st.day.rank) parts.push("Today #" + st.day.rank + " of " + st.day.total);
   if (st.all.rank) parts.push("Global #" + st.all.rank + " of " + st.all.total);
-  if (st.week.rank) parts.push("Week #" + st.week.rank + " of " + st.week.total);
+  if (st.week.rank && parts.length < 2) parts.push("Week #" + st.week.rank + " of " + st.week.total);
   return parts.join("  -  ");
 }
 
 // Pause / game-over overlay. Tapping anywhere but the button resumes / retries.
 function drawOverlay(c, g, standing) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
+  const daily = g.daily !== null;
+  if (daily) centerText(c, "DAILY CHALLENGE", g.state === "paused" ? G.H / 2 - 112 : 172, fonts.hud, 20, DAILY_COLOR);
   if (g.state === "paused") {
     centerText(c, "PAUSED", G.H / 2 - 60, fonts.title, 40, "#ffffff");
     centerText(c, "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
@@ -707,9 +780,11 @@ function drawOverlay(c, g, standing) {
       text(c, label, cx - textWidth(fonts.small, label, 16) / 2, 334, fill("#9fd4ff"), fonts.small);
     });
     if (g.newBest) centerText(c, "★ NEW BEST! ★", 386, fonts.cta, 24, "#ffd84d");
+    else if (g.newDailyBest) centerText(c, "★ BEST TODAY! ★", 386, fonts.cta, 24, DAILY_COLOR);
+    else if (daily && g.dailyBest.day === g.daily) centerText(c, "Best today: " + g.dailyBest.best, 382, fonts.sub, 21, "#9fd4ff");
     else centerText(c, "Best: " + g.best, 382, fonts.sub, 21, "#9fd4ff");
     // leaderboard places, once the server has answered
-    if (standing) centerText(c, rankLine(standing), 414, fonts.small, 16, "#c8d3e0");
+    if (standing) centerText(c, rankLine(standing, daily), 414, fonts.small, 16, "#c8d3e0");
     centerText(c, "TAP TO RETRY", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
   }
   drawButton(c, HOME_BTN, "MAIN MENU");
@@ -769,9 +844,11 @@ function drawGame(c, g, layout, t, ui) {
   else if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
   else if (ui.shop) drawShop(c, g);
-  else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g);
+  else if (ui.awards) drawAwards(c, g);
+  else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g, ui.confirmNew);
   else if (g.state === "menu") drawMenu(c, g);
   else if (g.state !== "playing") drawOverlay(c, g, ui.standing);
+  if (ui.toast) drawToast(c, ui.toast);
   c.restore();
 }
 
@@ -786,7 +863,9 @@ export default function App() {
   const standing = useRef(null); // { data }: leaderboard places for the game-over screen
   const settingsOpen = useRef(false);
   const shopOpen = useRef(false); // upgrade shop
-  const confirmNew = useRef(false); // "start a new run?" dialog over the menu
+  const awardsOpen = useRef(false); // achievements screen
+  const confirmNew = useRef(false); // "start a new run?" dialog over the menu: false, "run" or "daily"
+  const toasts = useRef([]); // unlocked achievements still to announce: { id, until }
   const tutorial = useRef({ on: false, moved: 0 }); // first-run hints, see tutorialHint
 
   // Show one tab of the leaderboard, after `first` (a name being saved) is done.
@@ -824,6 +903,7 @@ export default function App() {
       else if (board.current) board.current = null;
       else if (settingsOpen.current) settingsOpen.current = false;
       else if (shopOpen.current) shopOpen.current = false;
+      else if (awardsOpen.current) awardsOpen.current = false;
       else if (confirmNew.current) confirmNew.current = false;
       else if (g.state === "playing") G.togglePause(g);
       else if (g.state !== "menu") G.toMenu(g);
@@ -929,8 +1009,14 @@ export default function App() {
         G.update(g, dt, saveBest);
         if (engine) engine.playEvents(g);
         if (g.state === "gameover") haptic(g.newBest ? "notificationSuccess" : "notificationError");
+        else if (g.events.achieved.length) haptic("notificationSuccess");
         else if (g.events.bossSpawn) haptic("notificationWarning");
         else if (g.events.troopLost) haptic("impactHeavy");
+        // announce new achievements one after the other, and keep them (with their coins)
+        if (g.events.achieved.length) {
+          for (const id of g.events.achieved) toasts.current.push({ id, until: 0 });
+          storeMeta();
+        }
         // the hints are done once a gate is taken (or wave 1 is over)
         if (tutorial.current.on && (g.events.gate || g.wave > 1)) {
           tutorial.current.on = false;
@@ -941,8 +1027,11 @@ export default function App() {
         const s = { data: null }; // a later game over replaces it, so a late answer can't show on the wrong run
         standing.current = s;
         storeMeta(); // the run just paid out its coins
-        LB.recordRun(g.score, g.wave, g.elapsed).then((data) => { s.data = data; }).catch(() => {});
+        LB.recordRun(g.score, g.wave, g.elapsed, g.daily).then((data) => { s.data = data; }).catch(() => {});
       }
+      const toast = toasts.current[0];
+      if (toast && !toast.until) toast.until = now + 3200;
+      else if (toast && now > toast.until) toasts.current.shift();
       if (engine) {
         const bossAlive = g.zombies.some((z) => z.boss);
         engine.setMood(g.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
@@ -996,6 +1085,7 @@ export default function App() {
       if (hit(BOARD_BTNS.close, wx, wy)) board.current = null;
       else if (on && hit(BOARD_BTNS.all, wx, wy) && b.tab !== "all") openBoard("all");
       else if (on && hit(BOARD_BTNS.week, wx, wy) && b.tab !== "week") openBoard("week");
+      else if (on && hit(BOARD_BTNS.day, wx, wy) && b.tab !== "day") openBoard("day");
       else if (b.status === "ready" && b.data.me && hit(BOARD_BTNS.name, wx, wy)) namePick.current = parseName(b.data.me.name) || randomName();
       else return;
       if (engine) engine.click();
@@ -1029,27 +1119,40 @@ export default function App() {
       if (engine) engine.click();
       return;
     }
+    if (awardsOpen.current) {
+      if (hit(AWARDS_BACK_BTN, wx, wy)) {
+        awardsOpen.current = false;
+        if (engine) engine.click();
+      }
+      return;
+    }
+    const today = G.dayOf(Date.now());
     if (g.state === "menu") {
       if (confirmNew.current && g.inRun) {
         // anything but "start new run" keeps the waiting run
+        const daily = confirmNew.current === "daily";
         confirmNew.current = false;
-        if (hit(CONFIRM_BTNS.yes, wx, wy)) G.resetRun(g);
+        if (hit(CONFIRM_BTNS.yes, wx, wy)) G.resetRun(g, daily ? today : null);
         else if (engine) engine.click();
         return;
       }
       const btns = g.inRun ? RUN_MENU_BTNS : MENU_BTNS;
+      const start = hit(btns.fight, wx, wy) ? "run" : hit(btns.daily, wx, wy) ? "daily" : null;
       if (g.inRun && hit(btns.resume, wx, wy)) {
         G.resumeRun(g);
         if (engine) engine.click();
-      } else if (hit(btns.fight, wx, wy)) {
+      } else if (start) {
         if (g.inRun) {
-          confirmNew.current = true; // New Run would discard the waiting run
+          confirmNew.current = start; // starting either kind would discard the waiting run
           if (engine) engine.click();
         } else {
-          G.resetRun(g);
+          G.resetRun(g, start === "daily" ? today : null);
         }
       } else if (hit(btns.shop, wx, wy)) {
         shopOpen.current = true;
+        if (engine) engine.click();
+      } else if (hit(btns.awards, wx, wy)) {
+        awardsOpen.current = true;
         if (engine) engine.click();
       } else if (hit(btns.board, wx, wy)) {
         openBoard();
@@ -1075,7 +1178,7 @@ export default function App() {
       G.togglePause(g);
       if (engine) engine.click();
     } else {
-      G.resetRun(g);
+      G.resetRun(g, g.daily === null ? null : today); // retry the same kind of run
     }
   };
   const onMove = (e) => {
@@ -1089,7 +1192,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, shop: shopOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, shop: shopOpen.current, awards: awardsOpen.current, confirmNew: confirmNew.current, toast: toasts.current[0] && G.ACHIEVEMENTS.find((a) => a.id === toasts.current[0].id), hint: tutorialHint(tutorial.current, game.current) }));
 
   return (
     <View

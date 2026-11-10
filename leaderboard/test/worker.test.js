@@ -6,8 +6,9 @@ import { test, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import worker, { plausible, nameFor, validName, weekOf, weekEnd, ADJECTIVES, ANIMALS, MAX_ELAPSED } from "../src/index.js";
+import worker, { plausible, nameFor, validName, weekOf, weekEnd, dayOf, dayEnd, ADJECTIVES, ANIMALS, MAX_ELAPSED } from "../src/index.js";
 import * as appNames from "../../BridgeHordeApp/names.js";
+import * as core from "../../BridgeHordeApp/game/core.js";
 
 // ---------- D1 stand-in ----------
 const MIGRATIONS = new URL("../migrations/", import.meta.url);
@@ -55,6 +56,9 @@ const submitLater = (playerId, run) => {
 };
 const board = (query = "") => call("GET", "/leaderboard" + query);
 const WEEK_MS = 7 * 86_400_000;
+const DAY_MS = 86_400_000;
+// A daily challenge run, marked with the day it was played on (today unless given).
+const submitDaily = (playerId, run = RUN, daily = dayOf(now)) => submit(playerId, { ...run, daily });
 
 // ---------- plausible ----------
 test("plausible accepts honest runs", () => {
@@ -105,11 +109,12 @@ test("nameFor is stable and looks like AdjectiveAnimal123", () => {
 test("first submission stores the run and returns the player's standing", async () => {
   const res = await submit(ID_A);
   assert.equal(res.status, 200);
-  const week = weekOf(now);
+  const week = weekOf(now), day = dayOf(now);
   assert.deepEqual(res.body, {
     name: nameFor(ID_A),
     all: { best: 500, rank: 1, total: 1 },
     week: { id: week, endsAt: weekEnd(week), best: 500, rank: 1, total: 1 },
+    day: { id: day, endsAt: dayEnd(day), best: 0, rank: null, total: 0 }, // not a challenge run
   });
   assert.deepEqual((await board()).body.top, [{ rank: 1, name: nameFor(ID_A), score: 500, wave: 6 }]);
 });
@@ -160,7 +165,8 @@ test("a banned player id cannot post, and stays off the board", async () => {
   // What scripts/remove-score.js --ban runs.
   env.DB.sqlite.exec(
     `INSERT OR IGNORE INTO banned (id, banned_at) VALUES ('${ID_A}', ${now});
-     DELETE FROM players WHERE id = '${ID_A}'; DELETE FROM weekly WHERE id = '${ID_A}'`
+     DELETE FROM players WHERE id = '${ID_A}'; DELETE FROM weekly WHERE id = '${ID_A}';
+     DELETE FROM daily WHERE id = '${ID_A}'`
   );
 
   const res = await submitLater(ID_A, { score: 900, wave: 9, elapsed: 150 });
@@ -242,10 +248,10 @@ test("limit defaults to 20 and is clamped to 1..100", async () => {
   assert.equal(await rows("?limit=5000"), 100);
 });
 
-test("the asking player's row is marked, on both boards", async () => {
-  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
-  await submit(ID_B, { score: 300, wave: 6, elapsed: 100 });
-  for (const which of ["all", "week"]) {
+test("the asking player's row is marked, on every board", async () => {
+  await submitDaily(ID_A, { score: 800, wave: 6, elapsed: 100 });
+  await submitDaily(ID_B, { score: 300, wave: 6, elapsed: 100 });
+  for (const which of ["all", "week", "day"]) {
     const { top } = (await board("?board=" + which + "&player=" + ID_B)).body;
     assert.deepEqual(top.map((r) => r.you), [undefined, true], which);
   }
@@ -304,11 +310,12 @@ test("rank returns the standing without a submission", async () => {
   now += WEEK_MS;
   await submit(ID_C, { score: 100, wave: 3, elapsed: 40 });
 
-  const week = weekOf(now);
+  const week = weekOf(now), day = dayOf(now);
   assert.deepEqual((await call("GET", "/rank?player=" + ID_B)).body, {
     name: nameFor(ID_B),
     all: { best: 300, rank: 2, total: 3 },
     week: { id: week, endsAt: weekEnd(week), best: 0, rank: null, total: 1 },
+    day: { id: day, endsAt: dayEnd(day), best: 0, rank: null, total: 0 },
   });
   // A player the server has never seen.
   const fresh = (await call("GET", "/rank?player=" + "d".repeat(32))).body;
@@ -330,6 +337,119 @@ test("the scheduled run drops finished weeks but keeps the last one", async () =
   await worker.scheduled({}, env);
   assert.deepEqual(weeks(), [weekOf(now) - 1]);
   assert.equal((await board()).body.total, 2); // all-time entries stay
+});
+
+// ---------- daily challenge board ----------
+test("days are UTC days, counted the same way as in the game", () => {
+  const midnight = Date.UTC(2026, 10, 9);
+  assert.equal(dayOf(midnight - 1) + 1, dayOf(midnight));
+  assert.equal(dayOf(midnight + DAY_MS - 1), dayOf(midnight));
+  assert.equal(dayEnd(dayOf(midnight)), midnight + DAY_MS);
+  for (const ms of [0, midnight - 1, midnight, now]) assert.equal(dayOf(ms), core.dayOf(ms));
+});
+
+test("only challenge runs are on the daily board; they count for the other boards too", async () => {
+  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 }); // an ordinary run
+  const res = await submitDaily(ID_B, { score: 300, wave: 5, elapsed: 80 });
+  assert.equal(res.status, 200);
+  const day = dayOf(now);
+  assert.deepEqual(res.body.day, { id: day, endsAt: dayEnd(day), best: 300, rank: 1, total: 1 });
+  assert.deepEqual(res.body.all, { best: 300, rank: 2, total: 2 });
+  assert.equal(res.body.week.best, 300);
+
+  const today = (await board("?board=day&player=" + ID_B)).body;
+  assert.equal(today.board, "day");
+  assert.equal(today.endsAt, dayEnd(day));
+  assert.equal(today.total, 1);
+  assert.deepEqual(today.top, [{ rank: 1, name: nameFor(ID_B), score: 300, wave: 5, you: true }]);
+  assert.deepEqual(today.me, { name: nameFor(ID_B), score: 300, wave: 5, rank: 1 });
+  // A has an all-time entry but no challenge run today.
+  assert.deepEqual((await board("?board=day&player=" + ID_A)).body.me, { name: nameFor(ID_A), score: 0, wave: 0, rank: null });
+});
+
+test("the daily board keeps each player's best challenge run of the day", async () => {
+  await submitDaily(ID_A, { score: 300, wave: 5, elapsed: 80 });
+  await submitDaily(ID_B, { score: 400, wave: 6, elapsed: 100 });
+  now += 60_000;
+  assert.equal((await submitDaily(ID_A, { score: 200, wave: 3, elapsed: 40 })).body.day.best, 300);
+  // A better ordinary run moves the all-time best, not the challenge one.
+  now += 60_000;
+  const plain = (await submit(ID_A, { score: 900, wave: 9, elapsed: 150 })).body;
+  assert.equal(plain.all.best, 900);
+  assert.deepEqual({ best: plain.day.best, rank: plain.day.rank }, { best: 300, rank: 2 });
+  now += 60_000;
+  const better = (await submitDaily(ID_A, { score: 500, wave: 6, elapsed: 100 })).body;
+  assert.deepEqual({ best: better.day.best, rank: better.day.rank, total: better.day.total }, { best: 500, rank: 1, total: 2 });
+  assert.deepEqual((await board("?board=day")).body.top.map((r) => [r.rank, r.name, r.score, r.wave]), [
+    [1, nameFor(ID_A), 500, 6],
+    [2, nameFor(ID_B), 400, 6],
+  ]);
+});
+
+test("the daily board starts empty the next day", async () => {
+  await submitDaily(ID_A);
+  now += DAY_MS;
+  const res = (await board("?board=day&player=" + ID_A)).body;
+  assert.deepEqual(res.top, []);
+  assert.equal(res.total, 0);
+  assert.equal(res.me.rank, null);
+  assert.equal((await call("GET", "/rank?player=" + ID_A)).body.day.rank, null);
+  assert.equal((await board()).body.total, 1); // the all-time entry stays
+});
+
+test("a challenge run that ends just after midnight counts for the day it was started", async () => {
+  const midnight = dayEnd(dayOf(now));
+  const yesterday = dayOf(now);
+  const days = () => env.DB.sqlite.prepare("SELECT day, best FROM daily ORDER BY day").all().map((r) => [r.day, r.best]);
+
+  now = midnight + MAX_ELAPSED * 1000; // the longest run there is, started at 23:59
+  const late = await submitDaily(ID_A, RUN, yesterday);
+  assert.equal(late.status, 200);
+  assert.deepEqual(days(), [[yesterday, 500]]);
+  assert.equal(late.body.day.id, yesterday + 1); // the standing is about today, where it has no run
+  assert.equal(late.body.day.rank, null);
+
+  // Past that, the old day is closed: the run still counts everywhere else.
+  now += 1;
+  const closed = await submitDaily(ID_B, RUN, yesterday);
+  assert.equal(closed.status, 200);
+  assert.equal(closed.body.all.best, 500);
+  assert.equal(closed.body.week.best, 500);
+  assert.deepEqual(days(), [[yesterday, 500]]);
+});
+
+test("a challenge run cannot be posted to another day, and the day must be a number", async () => {
+  const today = dayOf(now);
+  for (const day of [today + 1, today - 2, 0, -1]) {
+    const res = await submitDaily(ID_A, RUN, day);
+    assert.equal(res.status, 200, "day " + day);
+    assert.equal(res.body.day.rank, null, "day " + day);
+    now += 60_000;
+  }
+  assert.equal(env.DB.sqlite.prepare("SELECT COUNT(*) AS n FROM daily").get().n, 0);
+  for (const day of ["today", 1.5, null, true, [today]]) {
+    assert.equal((await submitDaily(ID_B, RUN, day)).status, 400, JSON.stringify(day));
+  }
+  assert.equal((await board()).body.total, 1); // only A's runs got in
+});
+
+test("a banned player stays off the daily board", async () => {
+  env.DB.sqlite.exec(`INSERT INTO banned (id, banned_at) VALUES ('${ID_A}', ${now})`);
+  assert.equal((await submitDaily(ID_A)).status, 403);
+  assert.equal((await board("?board=day")).body.total, 0);
+});
+
+test("the scheduled run drops finished days but keeps the last one", async () => {
+  await submitDaily(ID_A);
+  now += DAY_MS;
+  await submitDaily(ID_B);
+  const days = () => env.DB.sqlite.prepare("SELECT day FROM daily ORDER BY day").all().map((r) => r.day);
+
+  await worker.scheduled({}, env);
+  assert.equal(days().length, 2);
+  now += DAY_MS;
+  await worker.scheduled({}, env);
+  assert.deepEqual(days(), [dayOf(now) - 1]);
 });
 
 // ---------- chosen names ----------
