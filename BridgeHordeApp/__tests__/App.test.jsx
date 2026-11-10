@@ -47,7 +47,14 @@ async function mount() {
       jest.advanceTimersByTime(50);
     });
   const tapBtn = (b) => tap(b.x + b.w / 2, b.y + b.h / 2);
-  return { tree, tap, tapBtn, G, ...AppModule };
+  // drag by dx world units from the last touch
+  const drag = (dx) =>
+    ReactTestRenderer.act(() => {
+      root.props.onResponderGrant({ nativeEvent: { pageX: 300, pageY: 900 } });
+      root.props.onResponderMove({ nativeEvent: { pageX: 300 + dx * scale, pageY: 900 } });
+      jest.advanceTimersByTime(50);
+    });
+  return { tree, tap, tapBtn, drag, G, ...AppModule };
 }
 
 test('main menu: leaderboard opens and closes, Fight Horde starts a run', async () => {
@@ -184,6 +191,35 @@ test('a run left for the main menu can be resumed, and survives a restart', asyn
   expect(await AsyncStorage.getItem('hordeRun')).toBeNull();
   spy.mockRestore();
   load.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('first run: hints for moving and gates, shown only once', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  jest.useFakeTimers();
+  const app = await mount();
+  const { G, MENU_BTNS, tutorialHint } = app;
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  const spy = jest.spyOn(G, 'resetRun');
+  await app.tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  // the app's own tutorial state isn't exported; drive it and check storage
+  expect(tutorialHint({ on: true, moved: 0 }, g).title).toMatch(/DRAG/);
+  expect(tutorialHint({ on: true, moved: 50 }, g)).toBeNull(); // no gate yet
+  g.gates.push({ y: 100, left: { label: 'DMG +1', color: '#fff', type: 'damage' }, right: { label: 'x', color: '#fff', type: 'wall' }, used: false });
+  expect(tutorialHint({ on: true, moved: 50 }, g).title).toMatch(/GATE/);
+  expect(tutorialHint({ on: false, moved: 0 }, g)).toBeNull();
+  await app.drag(60); // draws the gate hint for a few frames
+  expect(await AsyncStorage.getItem('hordeTutorial')).toBeNull();
+  g.gates[0].y = G.PLAYER_Y; // squad reaches the gate
+  await app.drag(5);
+  expect(g.gates.every((gate) => gate.used)).toBe(true);
+  expect(await AsyncStorage.getItem('hordeTutorial')).toBe('1');
+  spy.mockRestore();
   await ReactTestRenderer.act(() => {
     jest.advanceTimersByTime(200);
     app.tree.unmount();

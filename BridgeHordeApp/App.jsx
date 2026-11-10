@@ -457,6 +457,7 @@ export const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: b
 // Menu while a run is waiting: Resume takes the top spot, the rest move down.
 export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
 const RUN_KEY = "hordeRun";
+const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 // "Start a new run?" dialog, shown before New Run discards a waiting run.
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
@@ -563,6 +564,22 @@ function drawBoard(c, board) {
   center("TAP TO CLOSE", G.H - 34, fonts.cta, 24, "#f5c211");
 }
 
+// ---------- First-run hints ----------
+// Shown during wave 1 until the player has moved and taken a gate.
+// tu: { on, moved } - on while the hints are still owed, moved in world units.
+export function tutorialHint(tu, g) {
+  if (!tu.on || g.state !== "playing" || g.wave > 1) return null;
+  if (tu.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
+  if (g.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  return null;
+}
+function drawHint(c, h) {
+  const w = Math.max(textWidth(fonts.hud, h.title, 20), textWidth(fonts.small, h.sub, 16)) + 36;
+  c.drawRRect(Skia.RRectXY(Skia.XYWHRect(G.W / 2 - w / 2, 64, w, 64), 12, 12), fill("rgba(5,8,14,0.78)"));
+  centerText(c, h.title, 91, fonts.hud, 20, "#f5c211");
+  centerText(c, h.sub, 115, fonts.small, 16, "#ffffff");
+}
+
 const fmtTime = (sec) => {
   const s = Math.floor(sec);
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
@@ -641,6 +658,7 @@ function drawGame(c, g, layout, t, ui) {
   }
 
   drawHUD(c, g);
+  if (ui.hint) drawHint(c, ui.hint);
   c.restore();
   if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
@@ -659,6 +677,7 @@ export default function App() {
   const board = useRef(null); // open leaderboard screen, or null
   const settingsOpen = useRef(false);
   const confirmNew = useRef(false); // "start a new run?" dialog over the menu
+  const tutorial = useRef({ on: false, moved: 0 }); // first-run hints, see tutorialHint
 
   const openBoard = () => {
     if (!LB.enabled()) {
@@ -739,6 +758,13 @@ export default function App() {
       .catch(() => {});
   }, []);
 
+  // First-run hints stay off until we know they haven't been shown before.
+  useEffect(() => {
+    AsyncStorage.getItem(TUTORIAL_KEY)
+      .then((v) => { tutorial.current.on = v !== "1"; })
+      .catch(() => {});
+  }, []);
+
   // Auto-pause (and silence the music) when the app goes to the background
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
@@ -775,6 +801,11 @@ export default function App() {
         if (g.state === "gameover") haptic(g.newBest ? "notificationSuccess" : "notificationError");
         else if (g.events.bossSpawn) haptic("notificationWarning");
         else if (g.events.troopLost) haptic("impactHeavy");
+        // the hints are done once a gate is taken (or wave 1 is over)
+        if (tutorial.current.on && (g.events.gate || g.wave > 1)) {
+          tutorial.current.on = false;
+          AsyncStorage.setItem(TUTORIAL_KEY, "1").catch(() => {});
+        }
       }
       if (g.state === "gameover" && prevState === "playing") LB.recordRun(g.score, g.wave, g.elapsed);
       if (engine) {
@@ -874,12 +905,14 @@ export default function App() {
     const g = game.current;
     if (g.state !== "playing") return;
     const x = e.nativeEvent.pageX;
-    g.player.x += ((x - lastX.current) / layoutRef.current.scale) * 1.4;
+    const dx = (x - lastX.current) / layoutRef.current.scale;
+    g.player.x += dx * 1.4;
+    tutorial.current.moved += Math.abs(dx);
     lastX.current = x;
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current, confirmNew: confirmNew.current }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
 
   return (
     <View
