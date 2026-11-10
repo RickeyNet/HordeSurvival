@@ -11,9 +11,14 @@ export function createAudioEngine(ctx) {
   const musicGain = ctx.createGain();
   musicGain.gain.value = 0.5;
   musicGain.connect(master);
+  // every sound effect goes through here so the settings screen can mute them
+  const sfxGain = ctx.createGain();
+  sfxGain.gain.value = 1;
+  sfxGain.connect(master);
+  let musicOn = true;
 
   // one decaying note
-  function tone(freq, dur, vol, type = "square", when = 0, dest = master) {
+  function tone(freq, dur, vol, type = "square", when = 0, dest = sfxGain) {
     try {
       const t = ctx.currentTime + when;
       const o = ctx.createOscillator();
@@ -29,7 +34,7 @@ export function createAudioEngine(ctx) {
     } catch (e) {}
   }
   // pitch glide (kicks, whooshes, crashes)
-  function slide(f0, f1, dur, vol, type = "square", when = 0, dest = master) {
+  function slide(f0, f1, dur, vol, type = "square", when = 0, dest = sfxGain) {
     try {
       const t = ctx.currentTime + when;
       const o = ctx.createOscillator();
@@ -119,7 +124,7 @@ export function createAudioEngine(ctx) {
   function tick() {
     // schedule slightly ahead of the audio clock so timing stays tight
     while (nextTime < ctx.currentTime + 0.18) {
-      scheduleStep(nextTime);
+      if (musicOn) scheduleStep(nextTime);
       step = (step + 1) % 32;
       nextTime += EIGHTH;
     }
@@ -141,6 +146,13 @@ export function createAudioEngine(ctx) {
     mood = m;
     musicGain.gain.value = m === "menu" ? 0.3 : 0.5;
   }
+  // Settings toggles. Music keeps its place in the loop while muted.
+  function setMusicOn(on) {
+    musicOn = !!on;
+  }
+  function setSfxOn(on) {
+    sfxGain.gain.value = on ? 1 : 0;
+  }
 
-  return { playEvents, gameOverJingle, click, startMusic, stopMusic, setMood };
+  return { playEvents, gameOverJingle, click, startMusic, stopMusic, setMood, setMusicOn, setSfxOn };
 }

@@ -84,6 +84,13 @@ export function resetRun(g) {
   g.banner = { text: "WAVE 1", life: 2 };
 }
 
+// Back to the main menu with a clean bridge behind it (abandons any run).
+export function toMenu(g) {
+  const best = g.best;
+  Object.assign(g, newGame());
+  g.best = best;
+}
+
 export function togglePause(g) {
   if (g.state === "playing") g.state = "paused";
   else if (g.state === "paused") g.state = "playing";

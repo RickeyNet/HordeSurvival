@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { AppState, Platform, StatusBar, StyleSheet, View, useWindowDimensions } from "react-native";
+import { AppState, BackHandler, Platform, StatusBar, StyleSheet, View, useWindowDimensions } from "react-native";
 import {
   Canvas,
   PaintStyle,
@@ -27,7 +27,18 @@ function initAudio() {
       engine = createAudioEngine(audioCtx);
       engine.startMusic();
       engine.setMood("menu");
+      applySettings();
     } catch {}
+  }
+}
+
+// ---------- Settings (saved on the device) ----------
+const SETTINGS_KEY = "hordeSettings";
+const settings = { music: true, sfx: true, shake: true };
+function applySettings() {
+  if (engine) {
+    engine.setMusicOn(settings.music);
+    engine.setSfxOn(settings.sfx);
   }
 }
 
@@ -431,9 +442,60 @@ function drawHUD(c, g) {
   text(c, info, G.W / 2 - textWidth(fonts.small, info, 16) / 2, G.H - 14, fill("#9fd4ff"), fonts.small);
 }
 
-// Leaderboard button on the menu / game-over overlay (world coordinates).
-const LB_BTN = { x: G.W / 2 - 110, y: G.H / 2 + 122, w: 220, h: 46 };
-const inLbBtn = (wx, wy) => wx >= LB_BTN.x && wx <= LB_BTN.x + LB_BTN.w && wy >= LB_BTN.y && wy <= LB_BTN.y + LB_BTN.h;
+// ---------- Menu buttons (world coordinates) ----------
+const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
+export const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: btn(460, 54) };
+export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
+export const BACK_BTN = btn(G.H - 120, 50); // settings screen
+export const SETTING_ROWS = [
+  { key: "music", label: "Music" },
+  { key: "sfx", label: "Sound effects" },
+  { key: "shake", label: "Screen shake" },
+].map((r, i) => ({ ...r, x: 36, y: 150 + i * 76, w: G.W - 72, h: 60 }));
+const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
+
+function centerText(c, str, y, font, size, color) {
+  text(c, str, G.W / 2 - textWidth(font, str, size) / 2, y, fill(color), font);
+}
+function drawButton(c, b, label, primary) {
+  const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 12, 12);
+  if (primary) {
+    c.drawRRect(rr, fill("#f5c211"));
+    centerText(c, label, b.y + b.h / 2 + 9, fonts.cta, 24, "#1a1405");
+  } else {
+    c.drawRRect(rr, fill("rgba(255,255,255,0.12)"));
+    c.drawRRect(rr, stroke("#9fd4ff", 2));
+    centerText(c, label, b.y + b.h / 2 + 7, fonts.hud, 20, "#9fd4ff");
+  }
+}
+
+function drawMenu(c, g) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
+  centerText(c, "HORDE SURVIVAL", 208, fonts.title, 40, "#ffffff");
+  centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
+  drawButton(c, MENU_BTNS.fight, "FIGHT HORDE", true);
+  drawButton(c, MENU_BTNS.board, "LEADERBOARDS");
+  drawButton(c, MENU_BTNS.settings, "SETTINGS");
+  centerText(c, "Drag to move - you fire automatically", 588, fonts.small, 16, "#c8d3e0");
+  centerText(c, "Steer into gates - avoid the red ones!", 612, fonts.small, 16, "#c8d3e0");
+}
+
+function drawSettings(c) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
+  centerText(c, "SETTINGS", 84, fonts.title, 40, "#ffffff");
+  for (const r of SETTING_ROWS) {
+    const on = settings[r.key];
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(r.x, r.y, r.w, r.h), 12, 12), fill("rgba(255,255,255,0.08)"));
+    text(c, r.label, r.x + 18, r.y + r.h / 2 + 7, fill("#ffffff"), fonts.hud);
+    // toggle switch
+    const sw = 58, sh = 30, sx = r.x + r.w - sw - 16, sy = r.y + (r.h - sh) / 2;
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(sx, sy, sw, sh), sh / 2, sh / 2), fill(on ? "#3fbf6a" : "#4a5160"));
+    c.drawCircle(on ? sx + sw - sh / 2 : sx + sh / 2, sy + sh / 2, sh / 2 - 4, fill("#ffffff"));
+    const state = on ? "ON" : "OFF";
+    text(c, state, sx - 12 - textWidth(fonts.small, state, 16), r.y + r.h / 2 + 6, fill(on ? "#8fe3a8" : "#8b93a3"), fonts.small);
+  }
+  drawButton(c, BACK_BTN, "BACK");
+}
 
 // board: { status: "loading" | "ready" | "error" | "off", data }
 function drawBoard(c, board) {
@@ -469,34 +531,28 @@ function drawBoard(c, board) {
   center("TAP TO CLOSE", G.H - 34, fonts.cta, 24, "#f5c211");
 }
 
+// Pause / game-over overlay. Tapping anywhere but the button resumes / retries.
 function drawOverlay(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
-  const menu = g.state === "menu", paused = g.state === "paused";
-  const center = (str, y, font, size, color) =>
-    text(c, str, G.W / 2 - textWidth(font, str, size) / 2, y, fill(color), font);
-  center(paused ? "PAUSED" : menu ? "HORDE SURVIVAL" : "OVERRUN!", G.H / 2 - 60, fonts.title, 40, "#ffffff");
-  center(paused ? "Score: " + g.score : menu ? "Drag to move - you fire automatically" : "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
+  const paused = g.state === "paused";
+  centerText(c, paused ? "PAUSED" : "OVERRUN!", G.H / 2 - 60, fonts.title, 40, "#ffffff");
+  centerText(c, "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
   if (!paused) {
-    if (!menu && g.newBest) center("★ NEW BEST! ★", G.H / 2 + 32, fonts.cta, 24, "#ffd84d");
-    else center(menu ? "Steer into gates - avoid the red ones!" : "Best: " + g.best, G.H / 2 + 26, fonts.sub, 21, "#9fd4ff");
+    if (g.newBest) centerText(c, "★ NEW BEST! ★", G.H / 2 + 32, fonts.cta, 24, "#ffd84d");
+    else centerText(c, "Best: " + g.best, G.H / 2 + 26, fonts.sub, 21, "#9fd4ff");
   }
-  center(paused ? "TAP TO RESUME" : "TAP TO " + (menu ? "START" : "RETRY"), G.H / 2 + 90, fonts.cta, 24, "#f5c211");
-  if (!paused) {
-    const b = LB_BTN;
-    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 10, 10), fill("rgba(255,255,255,0.12)"));
-    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 10, 10), stroke("#9fd4ff", 2));
-    center("LEADERBOARD", b.y + 30, fonts.hud, 20, "#9fd4ff");
-  }
+  centerText(c, paused ? "TAP TO RESUME" : "TAP TO RETRY", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
+  drawButton(c, HOME_BTN, "MAIN MENU");
 }
 
 // ---------- Frame ----------
-function drawGame(c, g, layout, t, board) {
+function drawGame(c, g, layout, t, ui) {
   rect(c, 0, 0, layout.sw, layout.sh, fill("#0b0e14"));
   c.save();
   c.translate(layout.offX, layout.offY);
   c.scale(layout.scale, layout.scale);
   c.save();
-  if (g.shake > 0) c.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
+  if (g.shake > 0 && settings.shake) c.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
 
   drawSky(c, t);
   drawWaterAndCity(c);
@@ -538,7 +594,9 @@ function drawGame(c, g, layout, t, board) {
 
   drawHUD(c, g);
   c.restore();
-  if (board) drawBoard(c, board);
+  if (ui.board) drawBoard(c, ui.board);
+  else if (ui.settings) drawSettings(c);
+  else if (g.state === "menu") drawMenu(c, g);
   else if (g.state !== "playing") drawOverlay(c, g);
   c.restore();
 }
@@ -550,6 +608,7 @@ export default function App() {
   const [, setTick] = useState(0);
   const lastX = useRef(0);
   const board = useRef(null); // open leaderboard screen, or null
+  const settingsOpen = useRef(false);
 
   const openBoard = () => {
     if (!LB.enabled()) {
@@ -562,6 +621,32 @@ export default function App() {
       .then((data) => { b.status = "ready"; b.data = data; })
       .catch(() => { b.status = "error"; });
   };
+
+  // Load saved settings (defaults stay if nothing is stored).
+  useEffect(() => {
+    AsyncStorage.getItem(SETTINGS_KEY)
+      .then((raw) => {
+        const saved = raw ? JSON.parse(raw) : {};
+        for (const k of Object.keys(settings)) if (typeof saved[k] === "boolean") settings[k] = saved[k];
+        applySettings();
+      })
+      .catch(() => {});
+  }, []);
+
+  // Android back button: close a screen, pause a run, or leave a finished /
+  // paused run for the menu. On the menu itself it exits the app as usual.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      const g = game.current;
+      if (board.current) board.current = null;
+      else if (settingsOpen.current) settingsOpen.current = false;
+      else if (g.state === "playing") G.togglePause(g);
+      else if (g.state !== "menu") G.toMenu(g);
+      else return false;
+      return true;
+    });
+    return () => sub.remove();
+  }, []);
 
   // Send any score that couldn't be submitted last time (e.g. was offline).
   useEffect(() => { LB.flushPending(); }, []);
@@ -648,24 +733,47 @@ export default function App() {
       if (engine) engine.click();
       return;
     }
-    if ((g.state === "menu" || g.state === "gameover") && inLbBtn(wx, wy)) {
-      openBoard();
-      if (engine) engine.click();
+    if (settingsOpen.current) {
+      const row = SETTING_ROWS.find((r) => hit(r, wx, wy));
+      if (row) {
+        settings[row.key] = !settings[row.key];
+        applySettings();
+        AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)).catch(() => {});
+        if (engine) engine.click();
+      } else if (hit(BACK_BTN, wx, wy)) {
+        settingsOpen.current = false;
+        if (engine) engine.click();
+      }
       return;
     }
-    if (g.state === "playing" && G.inPauseBtn(wx, wy)) {
+    if (g.state === "menu") {
+      if (hit(MENU_BTNS.fight, wx, wy)) {
+        G.resetRun(g);
+      } else if (hit(MENU_BTNS.board, wx, wy)) {
+        openBoard();
+        if (engine) engine.click();
+      } else if (hit(MENU_BTNS.settings, wx, wy)) {
+        settingsOpen.current = true;
+        if (engine) engine.click();
+      }
+      return;
+    }
+    if (g.state === "playing") {
+      if (G.inPauseBtn(wx, wy)) {
+        G.togglePause(g);
+        if (engine) engine.click();
+      }
+      return;
+    }
+    // paused or game over
+    if (hit(HOME_BTN, wx, wy)) {
+      G.toMenu(g);
+      if (engine) engine.click();
+    } else if (g.state === "paused") {
       G.togglePause(g);
       if (engine) engine.click();
-      return;
-    }
-    if (g.state === "paused") {
-      G.togglePause(g);
-      if (engine) engine.click();
-      return;
-    }
-    if (g.state !== "playing") {
+    } else {
       G.resetRun(g);
-      return;
     }
   };
   const onMove = (e) => {
@@ -677,7 +785,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, board.current));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current }));
 
   return (
     <View

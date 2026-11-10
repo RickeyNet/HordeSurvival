@@ -18,7 +18,7 @@ jest.mock('../leaderboard', () => ({
 }));
 
 test('draws a loaded leaderboard without throwing', async () => {
-  const App = require('../App').default;
+  const { default: App, MENU_BTNS } = require('../App');
   const G = require('../game/core');
   jest.useFakeTimers();
   let tree;
@@ -32,7 +32,7 @@ test('draws a loaded leaderboard without throwing', async () => {
     root.props.onResponderGrant({
       nativeEvent: {
         pageX: (750 - G.W * scale) / 2 + (G.W / 2) * scale,
-        pageY: (1334 - G.H * scale) / 2 + (G.H / 2 + 145) * scale,
+        pageY: (1334 - G.H * scale) / 2 + (MENU_BTNS.board.y + 20) * scale,
       },
     });
     await Promise.resolve();
