@@ -129,7 +129,7 @@ test('a run left for the main menu can be resumed, and survives a restart', asyn
   const AsyncStorage = require('@react-native-async-storage/async-storage').default;
   jest.useFakeTimers();
   let app = await mount();
-  const { G, HOME_BTN, MENU_BTNS, RUN_MENU_BTNS } = app;
+  const { G, HOME_BTN, MENU_BTNS, RUN_MENU_BTNS, CONFIRM_BTNS } = app;
   const spy = jest.spyOn(G, 'resetRun');
   await app.tapBtn(MENU_BTNS.fight);
   const g = spy.mock.calls[0][0];
@@ -162,10 +162,23 @@ test('a run left for the main menu can be resumed, and survives a restart', asyn
   expect(g2.gates.length).toBe(g.gates.length);
   await app.tapBtn(RUN_MENU_BTNS.resume);
   expect(g2.state).toBe('playing');
-  // New Run from the menu abandons the kept run
+  // New Run asks first; backing out keeps the run
   await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
   await app.tapBtn(HOME_BTN);
+  const kept = g2.score;
   await app.tapBtn(RUN_MENU_BTNS.fight);
+  await app.tapBtn(CONFIRM_BTNS.cancel);
+  expect(g2.inRun).toBe(true);
+  expect(g2.score).toBe(kept);
+  expect(spy).toHaveBeenCalledTimes(1);
+  await app.tapBtn(RUN_MENU_BTNS.fight);
+  await app.tap(G.W / 2, 60); // outside the buttons also cancels
+  expect(g2.inRun).toBe(true);
+  expect(await AsyncStorage.getItem('hordeRun')).not.toBeNull();
+  // confirming abandons the kept run
+  await app.tapBtn(RUN_MENU_BTNS.fight);
+  await app.tapBtn(CONFIRM_BTNS.yes);
+  expect(spy).toHaveBeenCalledTimes(2);
   expect(g2.state).toBe('playing');
   expect(g2.score).toBe(0);
   expect(await AsyncStorage.getItem('hordeRun')).toBeNull();

@@ -457,6 +457,8 @@ export const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: b
 // Menu while a run is waiting: Resume takes the top spot, the rest move down.
 export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
 const RUN_KEY = "hordeRun";
+// "Start a new run?" dialog, shown before New Run discards a waiting run.
+export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
 export const BACK_BTN = btn(G.H - 120, 50); // settings screen
 export const SETTING_ROWS = [
@@ -499,6 +501,15 @@ function drawMenu(c, g) {
   drawButton(c, MENU_BTNS.settings, "SETTINGS");
   centerText(c, "Drag to move - you fire automatically", 588, fonts.small, 16, "#c8d3e0");
   centerText(c, "Steer into gates - avoid the red ones!", 612, fonts.small, 16, "#c8d3e0");
+}
+
+function drawConfirmNew(c, g) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
+  centerText(c, "NEW RUN?", 236, fonts.title, 40, "#ffffff");
+  centerText(c, "Your current run will be lost.", 284, fonts.sub, 21, "#9fd4ff");
+  centerText(c, "Wave " + g.wave + "  -  Score " + g.score, 316, fonts.small, 16, "#c8d3e0");
+  drawButton(c, CONFIRM_BTNS.cancel, "KEEP MY RUN", true);
+  drawButton(c, CONFIRM_BTNS.yes, "START NEW RUN");
 }
 
 function drawSettings(c) {
@@ -633,6 +644,7 @@ function drawGame(c, g, layout, t, ui) {
   c.restore();
   if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
+  else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g);
   else if (g.state === "menu") drawMenu(c, g);
   else if (g.state !== "playing") drawOverlay(c, g);
   c.restore();
@@ -646,6 +658,7 @@ export default function App() {
   const lastX = useRef(0);
   const board = useRef(null); // open leaderboard screen, or null
   const settingsOpen = useRef(false);
+  const confirmNew = useRef(false); // "start a new run?" dialog over the menu
 
   const openBoard = () => {
     if (!LB.enabled()) {
@@ -678,6 +691,7 @@ export default function App() {
       const g = game.current;
       if (board.current) board.current = null;
       else if (settingsOpen.current) settingsOpen.current = false;
+      else if (confirmNew.current) confirmNew.current = false;
       else if (g.state === "playing") G.togglePause(g);
       else if (g.state !== "menu") G.toMenu(g);
       else return false;
@@ -811,12 +825,24 @@ export default function App() {
       return;
     }
     if (g.state === "menu") {
+      if (confirmNew.current && g.inRun) {
+        // anything but "start new run" keeps the waiting run
+        confirmNew.current = false;
+        if (hit(CONFIRM_BTNS.yes, wx, wy)) G.resetRun(g);
+        else if (engine) engine.click();
+        return;
+      }
       const btns = g.inRun ? RUN_MENU_BTNS : MENU_BTNS;
       if (g.inRun && hit(btns.resume, wx, wy)) {
         G.resumeRun(g);
         if (engine) engine.click();
       } else if (hit(btns.fight, wx, wy)) {
-        G.resetRun(g);
+        if (g.inRun) {
+          confirmNew.current = true; // New Run would discard the waiting run
+          if (engine) engine.click();
+        } else {
+          G.resetRun(g);
+        }
       } else if (hit(btns.board, wx, wy)) {
         openBoard();
         if (engine) engine.click();
@@ -853,7 +879,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current, confirmNew: confirmNew.current }));
 
   return (
     <View
