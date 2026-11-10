@@ -17,6 +17,7 @@ import { trigger as hapticTrigger } from "react-native-haptic-feedback";
 import * as G from "./game/core";
 import { createAudioEngine } from "./game/audio";
 import * as LB from "./leaderboard";
+import { ADJECTIVES, ANIMALS, NUMBERS, makeName, parseName, randomName } from "./names";
 
 // ---------- Sound (shared engine: music + all SFX) ----------
 let audioCtx = null;
@@ -462,6 +463,18 @@ const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
 export const BACK_BTN = btn(G.H - 120, 50); // settings screen
+// Leaderboard screen: two tabs on top, two buttons at the bottom.
+const half = (x, y, h) => ({ x, y, w: 172, h });
+export const BOARD_BTNS = { all: half(24, 104, 36), week: half(204, 104, 36), name: half(24, 654, 48), close: half(204, 654, 48) };
+// Name picker: a row of step buttons per part of the name (see names.js).
+const step = (x, row, field, delta, label) => ({ x, y: 200 + row * 80, w: 56, h: 56, field, delta, label });
+export const NAME_STEPS = [
+  step(36, 0, "a", -1, "<"), step(G.W - 92, 0, "a", 1, ">"),
+  step(36, 1, "b", -1, "<"), step(G.W - 92, 1, "b", 1, ">"),
+  step(24, 2, "n", -10, "-10"), step(86, 2, "n", -1, "-1"), step(G.W - 142, 2, "n", 1, "+1"), step(G.W - 80, 2, "n", 10, "+10"),
+];
+const NAME_COUNTS = { a: ADJECTIVES.length, b: ANIMALS.length, n: NUMBERS };
+export const NAME_BTNS = { shuffle: btn(452, 54), save: btn(526, 64), cancel: btn(608, 54) };
 export const SETTING_ROWS = [
   { key: "music", label: "Music" },
   { key: "sfx", label: "Sound effects" },
@@ -475,13 +488,14 @@ function centerText(c, str, y, font, size, color) {
 }
 function drawButton(c, b, label, primary) {
   const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 12, 12);
+  const mid = b.x + b.w / 2;
   if (primary) {
     c.drawRRect(rr, fill("#f5c211"));
-    centerText(c, label, b.y + b.h / 2 + 9, fonts.cta, 24, "#1a1405");
+    text(c, label, mid - textWidth(fonts.cta, label, 24) / 2, b.y + b.h / 2 + 9, fill("#1a1405"), fonts.cta);
   } else {
     c.drawRRect(rr, fill("rgba(255,255,255,0.12)"));
     c.drawRRect(rr, stroke("#9fd4ff", 2));
-    centerText(c, label, b.y + b.h / 2 + 7, fonts.hud, 20, "#9fd4ff");
+    text(c, label, mid - textWidth(fonts.hud, label, 20) / 2, b.y + b.h / 2 + 7, fill("#9fd4ff"), fonts.hud);
   }
 }
 
@@ -530,38 +544,67 @@ function drawSettings(c) {
   drawButton(c, BACK_BTN, "BACK");
 }
 
-// board: { status: "loading" | "ready" | "error" | "off", data }
+// Time left on the weekly board, e.g. "3d 4h".
+export function fmtLeft(ms) {
+  const min = Math.max(0, Math.floor(ms / 60000));
+  const d = Math.floor(min / 1440), h = Math.floor(min / 60) % 24, m = min % 60;
+  return d > 0 ? d + "d " + h + "h" : h > 0 ? h + "h " + m + "m" : m + "m";
+}
+
+// board: { tab: "all" | "week", status: "loading" | "ready" | "error" | "off", data }
 function drawBoard(c, board) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
-  const center = (str, y, font, size, color) =>
-    text(c, str, G.W / 2 - textWidth(font, str, size) / 2, y, fill(color), font);
-  center("LEADERBOARD", 84, fonts.title, 40, "#ffffff");
+  centerText(c, "LEADERBOARD", 84, fonts.title, 40, "#ffffff");
+  const week = board.tab === "week";
+  if (board.status !== "off") {
+    drawButton(c, BOARD_BTNS.all, "ALL TIME", !week);
+    drawButton(c, BOARD_BTNS.week, "THIS WEEK", week);
+  }
   const msg = {
     loading: "Loading...",
     error: "Couldn't reach the leaderboard.",
     off: "Leaderboard isn't set up yet.",
   }[board.status];
   if (msg) {
-    center(msg, G.H / 2, fonts.sub, 21, "#9fd4ff");
+    centerText(c, msg, G.H / 2, fonts.sub, 21, "#9fd4ff");
   } else {
-    const { top, me } = board.data;
-    if (!top.length) center("No scores yet - be the first!", G.H / 2, fonts.sub, 21, "#9fd4ff");
+    const { top, me, total, endsAt } = board.data;
+    const info = total + (total === 1 ? " player" : " players") + (endsAt ? "  -  resets in " + fmtLeft(endsAt - Date.now()) : "");
+    centerText(c, info, 164, fonts.small, 16, "#c8d3e0");
+    if (!top.length) centerText(c, week ? "No scores yet this week!" : "No scores yet - be the first!", G.H / 2, fonts.sub, 21, "#9fd4ff");
     top.forEach((r, i) => {
-      const y = 140 + i * 30;
-      const mine = me && me.rank === r.rank && me.name === r.name;
-      if (mine) rect(c, 24, y - 21, G.W - 48, 28, fill("rgba(245,194,17,0.18)"));
-      const col = mine ? "#f5c211" : i < 3 ? "#ffd84d" : "#ffffff";
+      const y = 194 + i * 30;
+      if (r.you) rect(c, 24, y - 21, G.W - 48, 28, fill("rgba(245,194,17,0.18)"));
+      const col = r.you ? "#f5c211" : i < 3 ? "#ffd84d" : "#ffffff";
       text(c, "#" + r.rank, 34, y, fill(col), fonts.small);
       text(c, r.name, 84, y, fill(col), fonts.small);
       const sc = String(r.score);
       text(c, sc, G.W - 34 - textWidth(fonts.small, sc, 16), y, fill(col), fonts.small);
     });
     if (me) {
-      const youLine = me.rank ? "You: " + me.name + "   #" + me.rank + "   " + me.score : "You: " + me.name + "   (no score yet)";
-      center(youLine, G.H - 82, fonts.small, 16, "#f5c211");
+      const youLine = "You: " + me.name + (me.rank ? "   #" + me.rank + "   " + me.score : week ? "   (no score this week)" : "   (no score yet)");
+      centerText(c, youLine, 640, fonts.small, 16, "#f5c211");
+      drawButton(c, BOARD_BTNS.name, "CHANGE NAME");
     }
   }
-  center("TAP TO CLOSE", G.H - 34, fonts.cta, 24, "#f5c211");
+  drawButton(c, BOARD_BTNS.close, "CLOSE");
+}
+
+// Name picker, opened from the leaderboard. pick: { a, b, n } (see names.js).
+function drawNamePicker(c, pick) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.96)"));
+  centerText(c, "YOUR NAME", 84, fonts.title, 40, "#ffffff");
+  centerText(c, makeName(pick), 138, fonts.cta, 24, "#f5c211");
+  centerText(c, "This is how you appear on the leaderboard.", 170, fonts.small, 16, "#c8d3e0");
+  [ADJECTIVES[pick.a], ANIMALS[pick.b], String(pick.n)].forEach((value, row) => {
+    const y = 200 + row * 80;
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(24, y, G.W - 48, 56), 12, 12), fill("rgba(255,255,255,0.08)"));
+    centerText(c, value, y + 35, fonts.hud, 20, "#ffffff");
+  });
+  for (const b of NAME_STEPS) drawButton(c, b, b.label);
+  drawButton(c, NAME_BTNS.shuffle, "SHUFFLE");
+  drawButton(c, NAME_BTNS.save, "SAVE", true);
+  drawButton(c, NAME_BTNS.cancel, "CANCEL");
 }
 
 // ---------- First-run hints ----------
@@ -585,26 +628,37 @@ const fmtTime = (sec) => {
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 };
 
+// Leaderboard places for the game-over screen. st: a standing from
+// LB.recordRun. Empty when the player has no rank to show.
+export function rankLine(st) {
+  const parts = [];
+  if (st.all.rank) parts.push("Global #" + st.all.rank + " of " + st.all.total);
+  if (st.week.rank) parts.push("Week #" + st.week.rank + " of " + st.week.total);
+  return parts.join("  -  ");
+}
+
 // Pause / game-over overlay. Tapping anywhere but the button resumes / retries.
-function drawOverlay(c, g) {
+function drawOverlay(c, g, standing) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
   if (g.state === "paused") {
     centerText(c, "PAUSED", G.H / 2 - 60, fonts.title, 40, "#ffffff");
     centerText(c, "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
     centerText(c, "TAP TO RESUME", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
   } else {
-    centerText(c, "OVERRUN!", 236, fonts.title, 40, "#ffffff");
-    centerText(c, "Score: " + g.score, 280, fonts.cta, 24, "#ffffff");
+    centerText(c, "OVERRUN!", 216, fonts.title, 40, "#ffffff");
+    centerText(c, "Score: " + g.score, 258, fonts.cta, 24, "#ffffff");
     // run summary: wave reached, time survived, kills
-    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(40, 302, G.W - 80, 70), 12, 12), fill("rgba(255,255,255,0.08)"));
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(40, 278, G.W - 80, 70), 12, 12), fill("rgba(255,255,255,0.08)"));
     const stats = [["WAVE", String(g.wave)], ["TIME", fmtTime(g.elapsed)], ["KILLS", String(g.kills)]];
     stats.forEach(([label, value], i) => {
       const cx = 100 + i * 100;
-      text(c, value, cx - textWidth(fonts.hud, value, 20) / 2, 334, fill("#ffffff"), fonts.hud);
-      text(c, label, cx - textWidth(fonts.small, label, 16) / 2, 358, fill("#9fd4ff"), fonts.small);
+      text(c, value, cx - textWidth(fonts.hud, value, 20) / 2, 310, fill("#ffffff"), fonts.hud);
+      text(c, label, cx - textWidth(fonts.small, label, 16) / 2, 334, fill("#9fd4ff"), fonts.small);
     });
-    if (g.newBest) centerText(c, "★ NEW BEST! ★", 410, fonts.cta, 24, "#ffd84d");
-    else centerText(c, "Best: " + g.best, 406, fonts.sub, 21, "#9fd4ff");
+    if (g.newBest) centerText(c, "★ NEW BEST! ★", 386, fonts.cta, 24, "#ffd84d");
+    else centerText(c, "Best: " + g.best, 382, fonts.sub, 21, "#9fd4ff");
+    // leaderboard places, once the server has answered
+    if (standing) centerText(c, rankLine(standing), 414, fonts.small, 16, "#c8d3e0");
     centerText(c, "TAP TO RETRY", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
   }
   drawButton(c, HOME_BTN, "MAIN MENU");
@@ -660,11 +714,12 @@ function drawGame(c, g, layout, t, ui) {
   drawHUD(c, g);
   if (ui.hint) drawHint(c, ui.hint);
   c.restore();
-  if (ui.board) drawBoard(c, ui.board);
+  if (ui.namePick) drawNamePicker(c, ui.namePick);
+  else if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
   else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g);
   else if (g.state === "menu") drawMenu(c, g);
-  else if (g.state !== "playing") drawOverlay(c, g);
+  else if (g.state !== "playing") drawOverlay(c, g, ui.standing);
   c.restore();
 }
 
@@ -675,18 +730,22 @@ export default function App() {
   const [, setTick] = useState(0);
   const lastX = useRef(0);
   const board = useRef(null); // open leaderboard screen, or null
+  const namePick = useRef(null); // open name picker ({ a, b, n }), over the leaderboard
+  const standing = useRef(null); // { data }: leaderboard places for the game-over screen
   const settingsOpen = useRef(false);
   const confirmNew = useRef(false); // "start a new run?" dialog over the menu
   const tutorial = useRef({ on: false, moved: 0 }); // first-run hints, see tutorialHint
 
-  const openBoard = () => {
+  // Show one tab of the leaderboard, after `first` (a name being saved) is done.
+  const openBoard = (tab = "all", first = Promise.resolve()) => {
     if (!LB.enabled()) {
       board.current = { status: "off" };
       return;
     }
-    const b = { status: "loading" };
+    const b = { tab, status: "loading" };
     board.current = b;
-    LB.fetchBoard()
+    first
+      .then(() => LB.fetchBoard(tab))
       .then((data) => { b.status = "ready"; b.data = data; })
       .catch(() => { b.status = "error"; });
   };
@@ -708,7 +767,8 @@ export default function App() {
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       const g = game.current;
-      if (board.current) board.current = null;
+      if (namePick.current) namePick.current = null;
+      else if (board.current) board.current = null;
       else if (settingsOpen.current) settingsOpen.current = false;
       else if (confirmNew.current) confirmNew.current = false;
       else if (g.state === "playing") G.togglePause(g);
@@ -807,7 +867,11 @@ export default function App() {
           AsyncStorage.setItem(TUTORIAL_KEY, "1").catch(() => {});
         }
       }
-      if (g.state === "gameover" && prevState === "playing") LB.recordRun(g.score, g.wave, g.elapsed);
+      if (g.state === "gameover" && prevState === "playing") {
+        const s = { data: null }; // a later game over replaces it, so a late answer can't show on the wrong run
+        standing.current = s;
+        LB.recordRun(g.score, g.wave, g.elapsed).then((data) => { s.data = data; }).catch(() => {});
+      }
       if (engine) {
         const bossAlive = g.zombies.some((z) => z.boss);
         engine.setMood(g.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
@@ -836,8 +900,33 @@ export default function App() {
     const lay = layoutRef.current;
     const wx = (e.nativeEvent.pageX - lay.offX) / lay.scale;
     const wy = (e.nativeEvent.pageY - lay.offY) / lay.scale;
+    if (namePick.current) {
+      const pick = namePick.current;
+      const stepBtn = NAME_STEPS.find((b) => hit(b, wx, wy));
+      if (stepBtn) {
+        const count = NAME_COUNTS[stepBtn.field];
+        pick[stepBtn.field] = (pick[stepBtn.field] + stepBtn.delta + count) % count;
+      } else if (hit(NAME_BTNS.shuffle, wx, wy)) {
+        namePick.current = randomName();
+      } else if (hit(NAME_BTNS.save, wx, wy)) {
+        namePick.current = null;
+        openBoard(board.current.tab, LB.setName(makeName(pick)));
+      } else if (hit(NAME_BTNS.cancel, wx, wy)) {
+        namePick.current = null;
+      } else {
+        return;
+      }
+      if (engine) engine.click();
+      return;
+    }
     if (board.current) {
-      board.current = null;
+      const b = board.current;
+      const on = b.status !== "off"; // nothing but Close when the leaderboard isn't set up
+      if (hit(BOARD_BTNS.close, wx, wy)) board.current = null;
+      else if (on && hit(BOARD_BTNS.all, wx, wy) && b.tab !== "all") openBoard("all");
+      else if (on && hit(BOARD_BTNS.week, wx, wy) && b.tab !== "week") openBoard("week");
+      else if (b.status === "ready" && b.data.me && hit(BOARD_BTNS.name, wx, wy)) namePick.current = parseName(b.data.me.name) || randomName();
+      else return;
       if (engine) engine.click();
       return;
     }
@@ -912,7 +1001,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, settings: settingsOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
 
   return (
     <View

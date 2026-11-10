@@ -4,6 +4,8 @@
   "main": "src/index.js",
   "compatibility_date": "2026-11-08",
   "observability": { "enabled": true },
+  // Tuesdays 03:00 UTC: clear out weekly-board rows from finished weeks.
+  "triggers": { "crons": ["0 3 * * 2"] },
   "d1_databases": [
     {
       "binding": "DB",

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Remove a leaderboard entry, and optionally ban its player id so it cannot
-// post again.
+// Remove a leaderboard entry (all-time and weekly), and optionally ban its
+// player id so it cannot post again.
 //
 //   npm run remove-score -- <name or player id> [--ban] [--local]
 //
@@ -59,7 +59,7 @@ if (rows.length === 0 && !(byId && ban)) {
 }
 
 const id = rows.length ? rows[0].id : target;
-const statements = [`DELETE FROM players WHERE id = '${id}'`];
+const statements = [`DELETE FROM players WHERE id = '${id}'`, `DELETE FROM weekly WHERE id = '${id}'`];
 if (ban) statements.unshift(`INSERT OR IGNORE INTO banned (id, banned_at) VALUES ('${id}', ${Date.now()})`);
 sql(statements.join("; "));
 

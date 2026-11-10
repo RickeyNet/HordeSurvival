@@ -59,12 +59,15 @@ async function mount() {
 
 test('main menu: leaderboard opens and closes, Fight Horde starts a run', async () => {
   jest.useFakeTimers();
-  const { tree, tap, tapBtn, G, MENU_BTNS, HOME_BTN } = await mount();
+  const { tree, tap, tapBtn, G, MENU_BTNS, BOARD_BTNS, HOME_BTN } = await mount();
   const spy = jest.spyOn(G, 'resetRun');
   await tap(G.W / 2, 60); // empty space on the menu does nothing
   expect(spy).not.toHaveBeenCalled();
   await tapBtn(MENU_BTNS.board);
-  await tap(G.W / 2, G.H / 2); // close; must not start a run
+  await tap(G.W / 2, G.H / 2); // empty space on the board does nothing
+  await tapBtn(MENU_BTNS.fight); // still covered by the board
+  expect(spy).not.toHaveBeenCalled();
+  await tapBtn(BOARD_BTNS.close);
   expect(spy).not.toHaveBeenCalled();
   await tapBtn(MENU_BTNS.fight);
   expect(spy).toHaveBeenCalledTimes(1);

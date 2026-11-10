@@ -1,14 +1,22 @@
 // Horde Survival global leaderboard API (Cloudflare Worker + D1).
 //
-//   POST /scores        { playerId, score, wave, elapsed }  -> { name, best, rank }
-//   GET  /leaderboard?player=<id>&limit=20                  -> { top, me, total }
+//   POST /scores   { playerId, score, wave, elapsed, name? }   -> standing
+//   POST /name     { playerId, name }                          -> { name }
+//   GET  /rank?player=<id>                                     -> standing
+//   GET  /leaderboard?board=all|week&player=<id>&limit=20      -> { board, top, me, total, endsAt? }
+//
+//   standing = { name, all: { best, rank, total }, week: { id, endsAt, best, rank, total } }
+//
+// There are two boards: all-time bests, and bests for the current week (weeks
+// start Monday 00:00 UTC). A scheduled run clears out weeks that are over.
 //
 // There is no admin endpoint. Removing an entry (and banning its player id)
 // is done from the command line: see scripts/remove-score.js.
 //
 // Players are anonymous: the app makes up a random id on first launch and the
-// server derives a display name from it, so nothing personal is ever sent and
-// there are no user-typed names to moderate. No IP addresses are stored.
+// server derives a display name from it. A player can pick another name, but
+// only one built from the word lists below, so nothing personal is ever sent
+// and there are no user-typed names to moderate. No IP addresses are stored.
 
 const WAVE_LEN = 18; // must match game/core.js
 const ID_RE = /^[0-9a-f]{32}$/;
@@ -20,13 +28,21 @@ const MAX_BODY = 512; // bytes; a real submission is about 100
 // 180,100 (the old 24-hour cap let about 2 million through).
 export const MAX_ELAPSED = 7200;
 
+// ---------- Weeks ----------
+const WEEK_MS = 7 * 86_400_000;
+const WEEK_OFFSET = 4 * 86_400_000; // 1970-01-05 was a Monday
+export const weekOf = (ms) => Math.floor((ms - WEEK_OFFSET) / WEEK_MS);
+export const weekEnd = (week) => (week + 1) * WEEK_MS + WEEK_OFFSET;
+
 // ---------- Anonymous names ----------
-const ADJECTIVES = [
+// The app shows the same two lists in its name picker: keep them in step
+// with BridgeHordeApp/names.js (a test compares them).
+export const ADJECTIVES = [
   "Swift", "Brave", "Silent", "Lucky", "Clever", "Mighty", "Rapid", "Steady",
   "Bold", "Fierce", "Quiet", "Sharp", "Wild", "Calm", "Iron", "Golden",
   "Shadow", "Storm", "Frost", "Ember", "Rusty", "Nimble", "Gritty", "Daring",
 ];
-const ANIMALS = [
+export const ANIMALS = [
   "Otter", "Falcon", "Badger", "Wolf", "Fox", "Hawk", "Bear", "Lynx",
   "Raven", "Moose", "Bison", "Cobra", "Panda", "Tiger", "Gecko", "Heron",
   "Owl", "Shark", "Yak", "Puma", "Viper", "Mole", "Crane", "Ferret",
@@ -42,6 +58,13 @@ function fnv1a(str) {
 export function nameFor(id) {
   const h = fnv1a(id);
   return ADJECTIVES[h % ADJECTIVES.length] + ANIMALS[(h >>> 8) % ANIMALS.length] + ((h >>> 16) % 1000);
+}
+// A chosen name must be one the lists can make: adjective, animal, 0-999.
+const NAME_RE = /^([A-Z][a-z]+)([A-Z][a-z]+)(0|[1-9]\d{0,2})$/;
+export function validName(name) {
+  if (typeof name !== "string") return false;
+  const m = NAME_RE.exec(name);
+  return !!m && ADJECTIVES.includes(m[1]) && ANIMALS.includes(m[2]);
 }
 
 // ---------- Plausibility (cheap anti-cheat) ----------
@@ -66,25 +89,50 @@ const json = (body, status = 200) =>
     headers: { "content-type": "application/json", "cache-control": "no-store" },
   });
 
-async function rankOf(db, best) {
-  const row = await db.prepare("SELECT COUNT(*) AS n FROM players WHERE best > ?").bind(best).first();
-  return row.n + 1;
+// Read a small JSON body: at most MAX_BODY bytes, whatever content-length claims.
+async function readJson(request) {
+  const tooLarge = { error: json({ error: "too large" }, 413) };
+  if (Number(request.headers.get("content-length")) > MAX_BODY) return tooLarge;
+  try {
+    const raw = await request.text();
+    if (raw.length > MAX_BODY) return tooLarge;
+    return { body: JSON.parse(raw) || {} };
+  } catch {
+    return { error: json({ error: "bad json" }, 400) };
+  }
+}
+
+// Where a best score stands on a board (week = null for the all-time board).
+// Standard competition ranking: equal scores share a rank. No score, no rank.
+async function place(db, week, best) {
+  const count = "SELECT COUNT(*) AS total, COALESCE(SUM(best > ?1), 0) AS above FROM ";
+  const row = await (week === null
+    ? db.prepare(count + "players").bind(best ?? null)
+    : db.prepare(count + "weekly WHERE week = ?2").bind(best ?? null, week)
+  ).first();
+  return { best: best ?? 0, rank: best == null ? null : row.above + 1, total: row.total };
+}
+
+async function standing(db, playerId, now) {
+  const week = weekOf(now);
+  const row = await db.prepare(
+    `SELECT p.name, p.best, w.best AS week_best FROM players p
+     LEFT JOIN weekly w ON w.id = p.id AND w.week = ?2 WHERE p.id = ?1`
+  ).bind(playerId, week).first();
+  return {
+    name: row ? row.name : nameFor(playerId),
+    all: await place(db, null, row?.best),
+    week: { id: week, endsAt: weekEnd(week), ...(await place(db, week, row?.week_best)) },
+  };
 }
 
 // ---------- Handlers ----------
 async function submit(request, env) {
-  // Read at most MAX_BODY bytes, whatever content-length claims.
-  if (Number(request.headers.get("content-length")) > MAX_BODY) return json({ error: "too large" }, 413);
-  let body;
-  try {
-    const raw = await request.text();
-    if (raw.length > MAX_BODY) return json({ error: "too large" }, 413);
-    body = JSON.parse(raw);
-  } catch {
-    return json({ error: "bad json" }, 400);
-  }
-  const { playerId, score, wave, elapsed } = body || {};
+  const { body, error } = await readJson(request);
+  if (error) return error;
+  const { playerId, score, wave, elapsed, name } = body;
   if (typeof playerId !== "string" || !ID_RE.test(playerId)) return json({ error: "bad player id" }, 400);
+  if (name !== undefined && !validName(name)) return json({ error: "bad name" }, 400);
   if (!plausible({ score, wave, elapsed })) return json({ error: "rejected" }, 422);
 
   const now = Date.now();
@@ -93,48 +141,88 @@ async function submit(request, env) {
 
   // One statement, so two submissions racing each other can neither fail on
   // the insert nor leave the lower score as the best. A banned id inserts
-  // nothing, so no row comes back.
-  const name = nameFor(playerId);
+  // nothing, so no row comes back. A chosen name (?6) replaces the stored one.
   const row = await env.DB.prepare(
     `INSERT INTO players (id, name, best, wave, updated_at, last_submit)
      SELECT ?1, ?2, ?3, ?4, ?5, ?5 WHERE NOT EXISTS (SELECT 1 FROM banned WHERE id = ?1)
      ON CONFLICT (id) DO UPDATE SET
+       name = COALESCE(?6, name),
        wave = CASE WHEN excluded.best > best THEN excluded.wave ELSE wave END,
        updated_at = CASE WHEN excluded.best > best THEN excluded.updated_at ELSE updated_at END,
        best = MAX(best, excluded.best),
        last_submit = excluded.last_submit
      RETURNING best`
-  ).bind(playerId, name, score, wave, now).first();
+  ).bind(playerId, name ?? nameFor(playerId), score, wave, now, name ?? null).first();
   if (!row) return json({ error: "banned" }, 403);
-  const best = row.best;
-  return json({ name, best, rank: await rankOf(env.DB, best) });
+
+  // The same run also counts for the week it arrives in.
+  await env.DB.prepare(
+    `INSERT INTO weekly (week, id, best, wave, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+     ON CONFLICT (week, id) DO UPDATE SET
+       wave = CASE WHEN excluded.best > best THEN excluded.wave ELSE wave END,
+       updated_at = CASE WHEN excluded.best > best THEN excluded.updated_at ELSE updated_at END,
+       best = MAX(best, excluded.best)`
+  ).bind(weekOf(now), playerId, score, wave, now).run();
+
+  return json(await standing(env.DB, playerId, now));
+}
+
+// Change the name on an existing entry. A player without one has nothing to
+// update: the app sends the chosen name along with their first score instead.
+async function rename(request, env) {
+  const { body, error } = await readJson(request);
+  if (error) return error;
+  const { playerId, name } = body;
+  if (typeof playerId !== "string" || !ID_RE.test(playerId)) return json({ error: "bad player id" }, 400);
+  if (!validName(name)) return json({ error: "bad name" }, 400);
+  await env.DB.prepare("UPDATE players SET name = ? WHERE id = ?").bind(name, playerId).run();
+  return json({ name });
+}
+
+async function rank(url, env) {
+  const player = url.searchParams.get("player");
+  if (!player || !ID_RE.test(player)) return json({ error: "bad player id" }, 400);
+  return json(await standing(env.DB, player, Date.now()));
 }
 
 async function leaderboard(url, env) {
   const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(url.searchParams.get("limit"), 10) || 20));
-  const { results } = await env.DB.prepare(
-    "SELECT name, best, wave FROM players ORDER BY best DESC, updated_at ASC LIMIT ?"
-  ).bind(limit).all();
+  const week = url.searchParams.get("board") === "week" ? weekOf(Date.now()) : null;
+  const player = url.searchParams.get("player");
+  const id = player && ID_RE.test(player) ? player : null;
 
-  // Standard competition ranking: equal scores share a rank.
+  const { results } = await (week === null
+    ? env.DB.prepare("SELECT id, name, best, wave FROM players ORDER BY best DESC, updated_at ASC LIMIT ?").bind(limit)
+    : env.DB.prepare(
+        `SELECT w.id, p.name, w.best, w.wave FROM weekly w JOIN players p ON p.id = w.id
+         WHERE w.week = ? ORDER BY w.best DESC, w.updated_at ASC LIMIT ?`
+      ).bind(week, limit)
+  ).all();
+
+  // Standard competition ranking: equal scores share a rank. The asking
+  // player's own row is marked, since names are not unique.
   let prev = null, rank = 0;
   const top = results.map((r, i) => {
     if (r.best !== prev) rank = i + 1;
     prev = r.best;
-    return { rank, name: r.name, score: r.best, wave: r.wave };
+    const row = { rank, name: r.name, score: r.best, wave: r.wave };
+    if (r.id === id) row.you = true;
+    return row;
   });
 
-  const total = (await env.DB.prepare("SELECT COUNT(*) AS n FROM players").first()).n;
+  const mine = !id ? null : await (week === null
+    ? env.DB.prepare("SELECT name, best, wave FROM players WHERE id = ?").bind(id)
+    : env.DB.prepare(
+        `SELECT p.name, w.best, w.wave FROM players p
+         LEFT JOIN weekly w ON w.id = p.id AND w.week = ?2 WHERE p.id = ?1`
+      ).bind(id, week)
+  ).first();
+  const placed = await place(env.DB, week, mine?.best);
+  const me = id && { name: mine ? mine.name : nameFor(id), score: placed.best, wave: mine?.wave ?? 0, rank: placed.rank };
 
-  let me = null;
-  const player = url.searchParams.get("player");
-  if (player && ID_RE.test(player)) {
-    const row = await env.DB.prepare("SELECT best, wave FROM players WHERE id = ?").bind(player).first();
-    me = row
-      ? { name: nameFor(player), score: row.best, wave: row.wave, rank: await rankOf(env.DB, row.best) }
-      : { name: nameFor(player), score: 0, wave: 0, rank: null };
-  }
-  return json({ top, me, total });
+  const body = { board: week === null ? "all" : "week", top, me, total: placed.total };
+  if (week !== null) body.endsAt = weekEnd(week);
+  return json(body);
 }
 
 export default {
@@ -142,11 +230,19 @@ export default {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/scores") return await submit(request, env);
+      if (request.method === "POST" && url.pathname === "/name") return await rename(request, env);
+      if (request.method === "GET" && url.pathname === "/rank") return await rank(url, env);
       if (request.method === "GET" && url.pathname === "/leaderboard") return await leaderboard(url, env);
       return json({ error: "not found" }, 404);
     } catch (err) {
       console.error(err);
       return json({ error: "server error" }, 500);
     }
+  },
+
+  // Cron (see wrangler.jsonc): drop weekly rows from weeks that are over,
+  // keeping the one that just ended.
+  async scheduled(_event, env) {
+    await env.DB.prepare("DELETE FROM weekly WHERE week < ?").bind(weekOf(Date.now()) - 1).run();
   },
 };

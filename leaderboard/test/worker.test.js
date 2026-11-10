@@ -6,7 +6,8 @@ import { test, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import worker, { plausible, nameFor, MAX_ELAPSED } from "../src/index.js";
+import worker, { plausible, nameFor, validName, weekOf, weekEnd, ADJECTIVES, ANIMALS, MAX_ELAPSED } from "../src/index.js";
+import * as appNames from "../../BridgeHordeApp/names.js";
 
 // ---------- D1 stand-in ----------
 const MIGRATIONS = new URL("../migrations/", import.meta.url);
@@ -53,6 +54,7 @@ const submitLater = (playerId, run) => {
   return submit(playerId, run);
 };
 const board = (query = "") => call("GET", "/leaderboard" + query);
+const WEEK_MS = 7 * 86_400_000;
 
 // ---------- plausible ----------
 test("plausible accepts honest runs", () => {
@@ -100,10 +102,15 @@ test("nameFor is stable and looks like AdjectiveAnimal123", () => {
 });
 
 // ---------- submit ----------
-test("first submission stores the run and returns name, best and rank", async () => {
+test("first submission stores the run and returns the player's standing", async () => {
   const res = await submit(ID_A);
   assert.equal(res.status, 200);
-  assert.deepEqual(res.body, { name: nameFor(ID_A), best: 500, rank: 1 });
+  const week = weekOf(now);
+  assert.deepEqual(res.body, {
+    name: nameFor(ID_A),
+    all: { best: 500, rank: 1, total: 1 },
+    week: { id: week, endsAt: weekEnd(week), best: 500, rank: 1, total: 1 },
+  });
   assert.deepEqual((await board()).body.top, [{ rank: 1, name: nameFor(ID_A), score: 500, wave: 6 }]);
 });
 
@@ -111,14 +118,14 @@ test("a lower score keeps the old best and its wave", async () => {
   await submit(ID_A);
   const res = await submitLater(ID_A, { score: 200, wave: 3, elapsed: 40 });
   assert.equal(res.status, 200);
-  assert.equal(res.body.best, 500);
+  assert.equal(res.body.all.best, 500);
   assert.deepEqual((await board()).body.top, [{ rank: 1, name: nameFor(ID_A), score: 500, wave: 6 }]);
 });
 
 test("a higher score replaces the best and its wave", async () => {
   await submit(ID_A);
   const res = await submitLater(ID_A, { score: 900, wave: 9, elapsed: 150 });
-  assert.equal(res.body.best, 900);
+  assert.equal(res.body.all.best, 900);
   const { top, total } = (await board()).body;
   assert.deepEqual(top, [{ rank: 1, name: nameFor(ID_A), score: 900, wave: 9 }]);
   assert.equal(total, 1);
@@ -152,7 +159,8 @@ test("a banned player id cannot post, and stays off the board", async () => {
   await submit(ID_B, { score: 300, wave: 6, elapsed: 100 });
   // What scripts/remove-score.js --ban runs.
   env.DB.sqlite.exec(
-    `INSERT OR IGNORE INTO banned (id, banned_at) VALUES ('${ID_A}', ${now}); DELETE FROM players WHERE id = '${ID_A}'`
+    `INSERT OR IGNORE INTO banned (id, banned_at) VALUES ('${ID_A}', ${now});
+     DELETE FROM players WHERE id = '${ID_A}'; DELETE FROM weekly WHERE id = '${ID_A}'`
   );
 
   const res = await submitLater(ID_A, { score: 900, wave: 9, elapsed: 150 });
@@ -163,6 +171,7 @@ test("a banned player id cannot post, and stays off the board", async () => {
   assert.deepEqual(top, [{ rank: 1, name: nameFor(ID_B), score: 300, wave: 6 }]);
   assert.equal(total, 1);
   assert.equal(me.rank, null);
+  assert.equal((await board("?board=week")).body.total, 1);
 });
 
 test("a ban does not affect other players", async () => {
@@ -196,9 +205,10 @@ test("the board is ordered by score, ties share a rank and the earlier one comes
 
 test("submit returns the rank of the player's best", async () => {
   await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
-  assert.equal((await submit(ID_B, { score: 300, wave: 6, elapsed: 100 })).body.rank, 2);
-  assert.equal((await submit(ID_C, { score: 300, wave: 6, elapsed: 100 })).body.rank, 2);
-  assert.equal((await submitLater(ID_C, { score: 900, wave: 6, elapsed: 100 })).body.rank, 1);
+  assert.equal((await submit(ID_B, { score: 300, wave: 6, elapsed: 100 })).body.all.rank, 2);
+  const tied = (await submit(ID_C, { score: 300, wave: 6, elapsed: 100 })).body.all;
+  assert.deepEqual(tied, { best: 300, rank: 2, total: 3 });
+  assert.equal((await submitLater(ID_C, { score: 900, wave: 6, elapsed: 100 })).body.all.rank, 1);
 });
 
 test("me holds the asking player's own entry, also below the visible rows", async () => {
@@ -230,6 +240,161 @@ test("limit defaults to 20 and is clamped to 1..100", async () => {
   assert.equal(await rows("?limit=-3"), 1);
   assert.equal(await rows("?limit=abc"), 20);
   assert.equal(await rows("?limit=5000"), 100);
+});
+
+test("the asking player's row is marked, on both boards", async () => {
+  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
+  await submit(ID_B, { score: 300, wave: 6, elapsed: 100 });
+  for (const which of ["all", "week"]) {
+    const { top } = (await board("?board=" + which + "&player=" + ID_B)).body;
+    assert.deepEqual(top.map((r) => r.you), [undefined, true], which);
+  }
+});
+
+// ---------- weekly board ----------
+test("weeks start on Monday 00:00 UTC", () => {
+  const monday = Date.UTC(2026, 10, 9); // Monday 9 November 2026
+  assert.equal(weekOf(monday - 1) + 1, weekOf(monday));
+  assert.equal(weekOf(monday + WEEK_MS - 1), weekOf(monday));
+  assert.equal(weekEnd(weekOf(monday)), monday + WEEK_MS);
+});
+
+test("the weekly board holds this week's bests and starts empty the next week", async () => {
+  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
+  await submit(ID_B, { score: 300, wave: 6, elapsed: 100 });
+  let res = await board("?board=week&player=" + ID_B);
+  assert.equal(res.body.board, "week");
+  assert.equal(res.body.endsAt, weekEnd(weekOf(now)));
+  assert.deepEqual(res.body.top.map((r) => [r.rank, r.name, r.score]), [
+    [1, nameFor(ID_A), 800],
+    [2, nameFor(ID_B), 300],
+  ]);
+  assert.deepEqual(res.body.me, { name: nameFor(ID_B), score: 300, wave: 6, rank: 2 });
+
+  now += WEEK_MS;
+  res = await board("?board=week&player=" + ID_B);
+  assert.deepEqual(res.body.top, []);
+  assert.equal(res.body.total, 0);
+  assert.deepEqual(res.body.me, { name: nameFor(ID_B), score: 0, wave: 0, rank: null });
+  // The all-time board is untouched.
+  res = await board("?player=" + ID_B);
+  assert.equal(res.body.board, "all");
+  assert.equal(res.body.endsAt, undefined);
+  assert.equal(res.body.total, 2);
+  assert.equal(res.body.me.rank, 2);
+});
+
+test("a run below the all-time best can still be the best of a new week", async () => {
+  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
+  await submit(ID_B, { score: 600, wave: 6, elapsed: 100 });
+  now += WEEK_MS;
+  const res = await submit(ID_B, { score: 200, wave: 3, elapsed: 40 });
+  assert.deepEqual(res.body.all, { best: 600, rank: 2, total: 2 });
+  assert.deepEqual({ ...res.body.week, id: 0, endsAt: 0 }, { id: 0, endsAt: 0, best: 200, rank: 1, total: 1 });
+  // Within the week, only a higher score replaces it.
+  await submitLater(ID_B, { score: 100, wave: 3, elapsed: 40 });
+  const better = await submitLater(ID_B, { score: 400, wave: 5, elapsed: 80 });
+  assert.equal(better.body.week.best, 400);
+  assert.deepEqual((await board("?board=week")).body.top, [{ rank: 1, name: nameFor(ID_B), score: 400, wave: 5 }]);
+});
+
+test("rank returns the standing without a submission", async () => {
+  await submit(ID_A, { score: 800, wave: 6, elapsed: 100 });
+  await submit(ID_B, { score: 300, wave: 6, elapsed: 100 });
+  now += WEEK_MS;
+  await submit(ID_C, { score: 100, wave: 3, elapsed: 40 });
+
+  const week = weekOf(now);
+  assert.deepEqual((await call("GET", "/rank?player=" + ID_B)).body, {
+    name: nameFor(ID_B),
+    all: { best: 300, rank: 2, total: 3 },
+    week: { id: week, endsAt: weekEnd(week), best: 0, rank: null, total: 1 },
+  });
+  // A player the server has never seen.
+  const fresh = (await call("GET", "/rank?player=" + "d".repeat(32))).body;
+  assert.deepEqual(fresh.all, { best: 0, rank: null, total: 3 });
+  assert.equal(fresh.week.rank, null);
+  assert.equal((await call("GET", "/rank")).status, 400);
+  assert.equal((await call("GET", "/rank?player=nope")).status, 400);
+});
+
+test("the scheduled run drops finished weeks but keeps the last one", async () => {
+  await submit(ID_A);
+  now += WEEK_MS;
+  await submit(ID_B);
+  const weeks = () => env.DB.sqlite.prepare("SELECT week FROM weekly ORDER BY week").all().map((r) => r.week);
+
+  await worker.scheduled({}, env);
+  assert.equal(weeks().length, 2);
+  now += WEEK_MS;
+  await worker.scheduled({}, env);
+  assert.deepEqual(weeks(), [weekOf(now) - 1]);
+  assert.equal((await board()).body.total, 2); // all-time entries stay
+});
+
+// ---------- chosen names ----------
+test("validName only accepts names the word lists can make", () => {
+  for (const name of ["SwiftOtter482", "IronYak0", "DaringFerret999", nameFor(ID_A)]) {
+    assert.equal(validName(name), true, name);
+  }
+  const bad = [
+    "SwiftOtter", "SwiftOtter1000", "SwiftOtter007", "swiftOtter1", "SwiftOTTER1", "Swift Otter1",
+    "RudeOtter1", "SwiftWord1", "Otter1", "SwiftSwiftOtter1", "SwiftOtter1 ", "", null, 7, ["SwiftOtter1"],
+  ];
+  for (const name of bad) assert.equal(validName(name), false, JSON.stringify(name));
+});
+
+test("the app's name picker offers exactly the server's word lists", () => {
+  assert.deepEqual(appNames.ADJECTIVES, ADJECTIVES);
+  assert.deepEqual(appNames.ANIMALS, ANIMALS);
+  assert.equal(validName(appNames.makeName({ a: 0, b: 0, n: appNames.NUMBERS - 1 })), true);
+  assert.deepEqual(appNames.parseName("IronYak7"), { a: ADJECTIVES.indexOf("Iron"), b: ANIMALS.indexOf("Yak"), n: 7 });
+  assert.equal(appNames.parseName("SwiftOtter007"), null);
+});
+
+test("a name sent with a score is stored, and kept by later submissions without one", async () => {
+  const res = await submit(ID_A, { ...RUN, name: "IronYak7" });
+  assert.equal(res.body.name, "IronYak7");
+  await submitLater(ID_A, { score: 900, wave: 9, elapsed: 150 });
+  assert.equal((await board()).body.top[0].name, "IronYak7");
+  // Sending another one replaces it, also when the score is no better.
+  await submitLater(ID_A, { ...RUN, name: "CalmOwl12" });
+  assert.deepEqual((await board("?board=week&player=" + ID_A)).body.top, [
+    { rank: 1, name: "CalmOwl12", score: 900, wave: 9, you: true },
+  ]);
+});
+
+test("a name that the lists cannot make is refused", async () => {
+  assert.equal((await submit(ID_A, { ...RUN, name: "RudeWord1" })).status, 400);
+  assert.equal((await submit(ID_A, { ...RUN, name: null })).status, 400);
+  assert.equal((await board()).body.total, 0);
+  await submit(ID_A);
+  const res = await call("POST", "/name", { playerId: ID_A, name: "<b>hi</b>" });
+  assert.equal(res.status, 400);
+  assert.deepEqual(res.body, { error: "bad name" });
+  assert.equal((await call("POST", "/name", { playerId: "nope", name: "IronYak7" })).status, 400);
+  assert.equal((await call("POST", "/name", { playerId: ID_A, name: "IronYak7", pad: "x".repeat(600) })).status, 413);
+  assert.equal((await board()).body.top[0].name, nameFor(ID_A));
+});
+
+test("renaming changes the entry on both boards and in the standing", async () => {
+  await submit(ID_A);
+  const res = await call("POST", "/name", { playerId: ID_A, name: "IronYak7" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { name: "IronYak7" });
+  assert.equal((await board()).body.top[0].name, "IronYak7");
+  assert.equal((await board("?board=week")).body.top[0].name, "IronYak7");
+  assert.equal((await board("?player=" + ID_A)).body.me.name, "IronYak7");
+  assert.equal((await call("GET", "/rank?player=" + ID_A)).body.name, "IronYak7");
+});
+
+test("renaming a player with no entry stores nothing", async () => {
+  assert.equal((await call("POST", "/name", { playerId: ID_A, name: "IronYak7" })).status, 200);
+  assert.equal((await board()).body.total, 0);
+  // Banned ids have no entry either, so they cannot get a name onto the board.
+  env.DB.sqlite.exec(`INSERT INTO banned (id, banned_at) VALUES ('${ID_B}', ${now})`);
+  assert.equal((await submit(ID_B, { ...RUN, name: "IronYak7" })).status, 403);
+  assert.equal((await board("?board=week")).body.total, 0);
 });
 
 // ---------- routing ----------

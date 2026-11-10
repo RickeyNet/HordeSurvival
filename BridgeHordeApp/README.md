@@ -12,6 +12,7 @@ Built with React Native and drawn with [React Native Skia](https://shopify.githu
 | `game/audio.js` | Music and sound effects, shared by the app and the browser page. |
 | `App.jsx` | The app: drawing, touch input, menus, settings, saved runs, haptics. |
 | `leaderboard.js` | Client for the global leaderboard. |
+| `names.js` | Word lists for leaderboard names (must match the server's). |
 | `web/dev.html` | The same game in a browser, for quick gameplay tuning. |
 | `__tests__/` | Jest tests for the game rules and the app screens. |
 | `../leaderboard/` | The leaderboard server (Cloudflare Worker + D1). |
@@ -73,11 +74,13 @@ npm run db:migrate:remote
 
 `npm run deploy` creates the database on the first run and `npm run db:migrate:remote` creates its tables. Run the migrate step again after any deploy that adds a file to `leaderboard/migrations/`.
 
-Players are anonymous. The app makes up a random id on first launch and the server derives a display name from it.
+Players are anonymous. The app makes up a random id on first launch and the server derives a display name from it. A player can change the name from the leaderboard screen, but only to one built from the word lists in `names.js`: nothing is typed, so there is nothing to moderate. The server has its own copy of the lists in `leaderboard/src/index.js` and refuses any other name; if you change one copy, change the other (the Worker's tests compare them).
+
+There are two boards: all-time bests and bests for the current week. Weeks start on Monday 00:00 UTC. A cron trigger (set in `wrangler.jsonc`, deployed with the Worker) clears out finished weeks. The game-over screen shows the player's place on both boards.
 
 `npm test` in `leaderboard/` runs the Worker's tests. It needs Node 22.13 or newer and no install.
 
-To take an entry off the board, run this in `leaderboard/`:
+To take an entry off both boards, run this in `leaderboard/`:
 
 ```sh
 npm run remove-score -- SwiftOtter482          # a player asked for their entry to be deleted
