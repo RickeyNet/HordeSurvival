@@ -1207,3 +1207,158 @@ describe('achievements', () => {
     expect(g.dailyBest).toEqual({ day: 20766, best: 50 });
   });
 });
+
+describe('the yeti, boss of the Frozen Pass', () => {
+  const quiet = (over) => run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9, dropTimer: 1e9, ...over });
+  const ice = (x) => ({ x, y: G.PLAYER_Y - 9, vx: 0, vy: 100, ice: true });
+
+  test('the pass has its own boss cycle, led by the yeti', () => {
+    const g = G.newGame();
+    G.cycleEnv(g);
+    G.resetRun(g);
+    Object.assign(g, { zombieTimer: 1e9, gateTimer: 1e9, dropTimer: 1e9 });
+    expect(g.env).toBe('pass');
+    const bosses = [];
+    for (let wave = 2; wave <= 12; wave++) {
+      g.waveTimer = 0;
+      G.update(g, 0);
+      if (g.events.bossSpawn) bosses.push(g.zombies[g.zombies.length - 1]);
+    }
+    expect(bosses.map((z) => z.kind)).toEqual(['yeti', 'summoner', 'colossus', 'yeti']);
+    expect(bosses.every((z) => z.boss)).toBe(true);
+    expect(g.banner.text).toBe('YETI INCOMING!');
+    // every boss an environment lists exists
+    for (const env of Object.values(G.ENVS)) {
+      for (const kind of env.bosses) expect(G.KIND_STATS[kind].boss).toBe(true);
+    }
+  });
+
+  test('it throws ice at where the squad stands', () => {
+    const g = quiet({ env: 'pass' });
+    g.player.x = 100;
+    const y = zombie({ kind: 'yeti', boss: true, x: 300, y: 80, iceTimer: 0.01 });
+    g.zombies.push(y);
+    G.update(g, 0.05);
+    expect(g.events.spit).toBe(true);
+    expect(g.spits).toHaveLength(1);
+    expect(g.spits[0].ice).toBe(true);
+    expect(g.spits[0].vx).toBeLessThan(0);
+    G.update(g, 0.05);
+    expect(g.spits).toHaveLength(1); // the next one is ICE_EVERY away
+    expect(y.iceTimer).toBeGreaterThan(G.ICE_EVERY - 0.2);
+    // none while everything is frozen
+    y.iceTimer = 0.01;
+    g.effects.freeze = 1;
+    G.update(g, 0.05);
+    expect(g.spits).toHaveLength(1);
+  });
+
+  test('ice that lands on the squad stops its fire for a while, and costs no one', () => {
+    const g = quiet({ fireTimer: 0 });
+    g.player.troops = 3;
+    g.spits.push(ice(g.player.x));
+    G.update(g, 0.05);
+    expect(g.events.chilled).toBe(true);
+    expect(g.effects.chill).toBe(G.CHILL_TIME);
+    expect(g.player.troops).toBe(3);
+    expect(g.hits).toBe(0);
+    expect(g.spits).toHaveLength(0);
+    // no shot until it has worn off
+    g.bullets = [];
+    for (let t = 0.05; t < G.CHILL_TIME - 0.05; t += 0.05) {
+      G.update(g, 0.05);
+      expect(g.events.shot).toBe(false);
+    }
+    expect(g.bullets).toHaveLength(0);
+    // then the wait for the next volley picks up where it stopped
+    for (let t = 0; t < 0.6; t += 0.05) G.update(g, 0.05);
+    expect(g.effects.chill).toBe(0);
+    expect(g.bullets.length).toBeGreaterThan(0);
+  });
+
+  test('ice that misses does nothing', () => {
+    const g = quiet();
+    g.player.x = G.ROAD_L;
+    g.spits.push(ice(G.ROAD_R - 20));
+    G.update(g, 0.05);
+    expect(g.events.chilled).toBe(false);
+    expect(g.effects.chill).toBe(0);
+    expect(g.spits).toHaveLength(0);
+  });
+
+  test('a run saved before there was a chill still fires', () => {
+    const other = run();
+    G.togglePause(other);
+    const old = JSON.parse(G.saveRun(other));
+    delete old.run.effects.chill;
+    delete old.run.powers;
+    const g = G.newGame();
+    expect(G.loadRun(g, JSON.stringify(old))).toBe(true);
+    expect(g.effects).toEqual({ freeze: 0, rapid: 0, strike: 0, chill: 0 });
+    expect(g.powers).toEqual({});
+    G.resumeRun(g);
+    g.fireTimer = 0;
+    G.update(g, 0.05);
+    expect(g.events.shot).toBe(true);
+  });
+});
+
+describe('achievements for the newer content', () => {
+  const quiet = (over) => run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9, dropTimer: 1e9, ...over });
+  const bullet = () => ({ x: G.ROAD_MID, y: 100, dmg: 1, vx: 0, pierce: 0, aoe: 0, wkey: 'rifle' });
+  // a bomber about to be shot, with n walkers inside its blast
+  const blast = (n) => {
+    const g = quiet();
+    g.zombies.push(zombie({ kind: 'bomber', hp: 1, maxHp: 10 }));
+    for (let i = 0; i < n; i++) g.zombies.push(zombie({ x: G.ROAD_MID + 20, y: 90 + i * 8, hp: 5 }));
+    g.bullets.push(bullet());
+    G.update(g, 0);
+    return g;
+  };
+
+  test('chain reaction: one bomber blast kills enough zombies', () => {
+    const few = blast(G.CHAIN_KILLS - 1);
+    expect(few.kills).toBe(G.CHAIN_KILLS);
+    expect(few.achieved).toEqual({});
+    const enough = blast(G.CHAIN_KILLS);
+    expect(enough.achieved).toEqual({ chain: true });
+    expect(enough.events.achieved).toEqual(['chain']);
+  });
+
+  test('chain reaction: what a second bomber takes with it counts too', () => {
+    const g = quiet();
+    g.zombies.push(zombie({ kind: 'bomber', hp: 1, maxHp: 10 }));
+    // a second bomber at the edge of the first blast, and its own neighbours beyond it
+    const x = G.ROAD_MID + G.BOMB_RADIUS - 5;
+    g.zombies.push(zombie({ kind: 'bomber', x, hp: 5, maxHp: 10 }));
+    for (let i = 0; i < G.CHAIN_KILLS - 1; i++) g.zombies.push(zombie({ x: x + 30, y: 95 + i * 8, hp: 5 }));
+    g.bullets.push(bullet());
+    G.update(g, 0);
+    expect(g.kills).toBe(G.CHAIN_KILLS + 1);
+    expect(g.achieved).toEqual({ chain: true });
+  });
+
+  test('fully loaded: every kind of crate in one run', () => {
+    const g = quiet();
+    const keys = Object.keys(G.POWERUPS);
+    for (const [i, type] of keys.entries()) {
+      expect(g.achieved.powerups).toBeUndefined();
+      g.drops.push({ x: g.player.x, y: G.PLAYER_Y - 5, type });
+      G.update(g, 0);
+      expect(g.powers[type]).toBe(true);
+      expect(Object.keys(g.powers)).toHaveLength(i + 1);
+    }
+    expect(g.achieved).toEqual({ powerups: true });
+    // the count starts over with the next run
+    G.resetRun(g);
+    expect(g.powers).toEqual({});
+  });
+
+  test('icebreaker: a yeti brought down', () => {
+    const g = quiet();
+    g.zombies.push(zombie({ kind: 'yeti', boss: true, hp: 1, iceTimer: 99 }));
+    g.bullets.push({ ...bullet(), wkey: 'smg' });
+    G.update(g, 0);
+    expect(Object.keys(g.achieved).sort()).toEqual(['boss', 'yeti']);
+  });
+});

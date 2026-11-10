@@ -29,7 +29,8 @@
 ## Content
 - [x] More run variety: new enemy kinds (bomber, weaver, spitter), a second environment (Frozen Pass, picked on the menu), temporary power-ups (freeze, airstrike, rapid fire)
 - [ ] Tune the new content from playtests: spawn shares and wave gates of the new kinds, spitter range and rate, crate interval, effect lengths, the Frozen Pass multipliers
-- [ ] Ideas not done yet: an achievement or two for the new content (the Achievements screen is full at 13 rows), a first-time hint for crates, a boss for the new map
+- [x] Small content extras: a first-time hint for crates, three achievements for the new content (Chain Reaction, Fully Loaded, Icebreaker; the Achievements screen now has pages of eight), and a boss for the Frozen Pass (the yeti: its ice stops the squad's fire for a moment)
+- [ ] Tune the yeti from playtests: health, how often it throws, how long the guns stay frozen (`ICE_EVERY`, `CHILL_TIME`); and the bar for Chain Reaction (`CHAIN_KILLS`)
 - [ ] Difficulty tuning from playtests (track wave reached)
 
 ## Technical

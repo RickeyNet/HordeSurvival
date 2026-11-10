@@ -21,7 +21,8 @@ export const WAVE_LEN = 18; // seconds per wave
 // troopCost = soldiers lost if it reaches your line.
 // bomber: bursts when shot, hurting the zombies around it, and blows a chunk
 // out of the first wall it reaches. weaver: sways across the road as it
-// comes. spitter: stops short of the squad and lobs acid at it.
+// comes. spitter: stops short of the squad and lobs acid at it. yeti: the
+// boss of the Frozen Pass; hurls ice that jams the squad's guns for a moment.
 export const KIND_STATS = {
   walker:   { size: 13, hpMul: 0.75, spdMul: 1.0,  troopCost: 1, score: 1 },
   runner:   { size: 11, hpMul: 0.4,  spdMul: 1.8,  troopCost: 1, score: 2 },
@@ -32,8 +33,8 @@ export const KIND_STATS = {
   brute:    { size: 30, hpMul: 9,    spdMul: 0.4,  troopCost: 3, score: 25, boss: true },
   summoner: { size: 26, hpMul: 7,    spdMul: 0.34, troopCost: 3, score: 30, boss: true },
   colossus: { size: 38, hpMul: 14,   spdMul: 0.26, troopCost: 5, score: 50, boss: true },
+  yeti:     { size: 32, hpMul: 9.5,  spdMul: 0.38, troopCost: 3, score: 30, boss: true },
 };
-const BOSS_CYCLE = ["brute", "summoner", "colossus"];
 export const BOMB_RADIUS = 55; // reach of a bomber's blast
 export const BOMB_WALL = 0.4; // share of a wall's full hit points a bomber takes off
 export const WEAVE = 55; // how far a weaver sways to either side
@@ -41,14 +42,17 @@ export const SPIT_HOLD = PLAYER_Y - 250; // where a spitter stops
 export const SPIT_EVERY = 3.2; // seconds between a spitter's shots
 export const SPIT_SPEED = 230;
 export const MAX_SPITTERS = 3; // on the road at once
+export const ICE_EVERY = 4; // seconds between a yeti's throws
+export const CHILL_TIME = 1.8; // how long a hit by its ice keeps the squad from firing
 
 // ---------- Environments ----------
 // Where a run takes place. The renderers draw each one differently; hpMul and
-// spdMul scale every zombie spawned there. An ordinary run uses the one picked
-// on the menu (g.envPick); a daily challenge takes its own from the day.
+// spdMul scale every zombie spawned there, and bosses lists the ones that
+// arrive, in order, over and over. An ordinary run uses the one picked on the
+// menu (g.envPick); a daily challenge takes its own from the day.
 export const ENVS = {
-  bridge: { label: "SUNSET BRIDGE", desc: "The classic", hpMul: 1, spdMul: 1 },
-  pass: { label: "FROZEN PASS", desc: "Slower horde, thicker hides", hpMul: 1.25, spdMul: 0.85 },
+  bridge: { label: "SUNSET BRIDGE", desc: "The classic", hpMul: 1, spdMul: 1, bosses: ["brute", "summoner", "colossus"] },
+  pass: { label: "FROZEN PASS", desc: "Slower horde, thicker hides", hpMul: 1.25, spdMul: 0.85, bosses: ["yeti", "summoner", "colossus"] },
 };
 export const ENV_KEYS = Object.keys(ENVS);
 // The next environment on the menu, for the following ordinary run.
@@ -92,6 +96,7 @@ function freshEvents() {
     waveStart: false, bossSpawn: false, bossDown: false, summon: false,
     pickup: null, boom: false, wallBuilt: false, wallDown: false,
     spit: false, power: null, // power: key of the POWERUPS crate just taken
+    chilled: false, // a yeti's ice just hit the squad
     achieved: [], // ids of ACHIEVEMENTS unlocked this frame
   };
 }
@@ -104,9 +109,12 @@ export function newGame() {
     zombies: [],
     gates: [],
     walls: [], // up to 3 { y, hp, maxHp } barricades zombies must chew through
-    spits: [], // acid in the air: { x, y, vx, vy }
+    spits: [], // acid in the air: { x, y, vx, vy }; a yeti's ice has ice: true
     drops: [], // power-up crates on the road: { x, y, type }
-    effects: { freeze: 0, rapid: 0, strike: 0 }, // seconds left; strike counts down to the airstrike landing
+    // seconds left; strike counts down to the airstrike landing, chill is the
+    // squad's guns iced up by a yeti
+    effects: { freeze: 0, rapid: 0, strike: 0, chill: 0 },
+    powers: {}, // POWERUPS key -> true for every kind of crate taken this run
     flash: 0, // white-out after an airstrike, 1 -> 0
     env: "bridge", // key of ENVS this run is played in
     envPick: "bridge", // environment picked on the menu; kept between runs
@@ -232,7 +240,9 @@ export function loadRun(g, json) {
   // (saveMeta), so the copy inside a saved run may be out of date and is
   // never used
   const { coins, upgrades, dailyBest, achieved, envPick } = g;
-  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins, upgrades, dailyBest, achieved, envPick });
+  const fresh = newGame();
+  Object.assign(g, fresh, run, { state: "menu", inRun: true, best, coins, upgrades, dailyBest, achieved, envPick });
+  g.effects = { ...fresh.effects, ...run.effects }; // a run saved by an older version has fewer effects
   if (!ENVS[g.env]) g.env = "bridge";
   return true;
 }
@@ -268,7 +278,9 @@ export function buyUpgrade(g, key) {
 // ---------- Achievements ----------
 // Each one unlocks once, for good, and pays its coins on the spot. Those with
 // a `when` are checked against the run every frame; the others are unlocked
-// where the thing happens (a boss kill, the end of a daily run).
+// where the thing happens (a boss kill, a bomber's blast, the end of a daily
+// run).
+export const CHAIN_KILLS = 3; // zombies one bomber's blast has to kill for "chain"
 export const ACHIEVEMENTS = [
   { id: "wave5", label: "HOLD THE LINE", desc: "Reach wave 5", coins: 10, when: (g) => g.wave >= 5 },
   { id: "wave10", label: "DUG IN", desc: "Reach wave 10", coins: 25, when: (g) => g.wave >= 10 },
@@ -281,8 +293,11 @@ export const ACHIEVEMENTS = [
   { id: "fullSquad", label: "FULL HOUSE", desc: "Field a squad of " + MAX_TROOPS, coins: 20, when: (g) => g.player.troops >= MAX_TROOPS },
   { id: "fortress", label: "FORTRESS", desc: "Have three walls standing", coins: 15, when: (g) => g.walls.length >= WALL_SLOTS.length },
   { id: "arsenal", label: "ARSENAL", desc: "Carry every weapon in one run", coins: 25, when: (g) => Object.keys(WEAPONS).every((k) => g.guns[k]) },
-  { id: "untouched", label: "UNTOUCHED", desc: "Reach wave 5 with no zombie getting through", coins: 30, when: (g) => g.wave >= 5 && g.hits === 0 },
+  { id: "untouched", label: "UNTOUCHED", desc: "No zombie gets through before wave 5", coins: 30, when: (g) => g.wave >= 5 && g.hits === 0 },
   { id: "daily", label: "DAILY DUTY", desc: "Finish a daily challenge", coins: 15 },
+  { id: "chain", label: "CHAIN REACTION", desc: "Kill " + CHAIN_KILLS + " zombies with one bomber's blast", coins: 20 },
+  { id: "powerups", label: "FULLY LOADED", desc: "Take every kind of crate in one run", coins: 20, when: (g) => POWERUP_KEYS.every((k) => g.powers[k]) },
+  { id: "yeti", label: "ICEBREAKER", desc: "Defeat the yeti of the Frozen Pass", coins: 25 },
 ];
 function unlock(g, id) {
   if (g.achieved[id]) return;
@@ -474,6 +489,7 @@ function spawnZombie(g, kind, stream = "spawns") {
     wob: Math.random() * Math.PI * 2,
     summonTimer: kind === "summoner" ? 2.5 : 0,
   };
+  if (kind === "yeti") z.iceTimer = ICE_EVERY * 0.6;
   if (kind === "weaver") {
     // sways around cx, which is kept far enough from the rails
     z.cx = Math.max(ROAD_L + 20 + WEAVE, Math.min(ROAD_R - 20 - WEAVE, z.x));
@@ -529,14 +545,18 @@ function registerKill(g, z, wkey) {
   z.scored = true;
   if (z.kind === "bomber") {
     // takes its neighbours with it; another bomber in reach goes off in turn
+    // (and what that one kills counts for this blast too)
     g.events.boom = true;
     burst(g, z.x, z.y, "#ff8c4d", 18);
+    const before = g.kills;
     splash(g, z.x, z.y, BOMB_RADIUS, Math.ceil(z.maxHp * 2), wkey, z);
+    if (g.kills - before >= CHAIN_KILLS) unlock(g, "chain");
   }
   if (z.boss) {
     unlock(g, "boss");
     if (wkey === "rifle") unlock(g, "rifleBoss");
     if (z.kind === "colossus") unlock(g, "colossus");
+    if (z.kind === "yeti") unlock(g, "yeti");
   }
   g.kills++;
   g.score += z.scoreVal;
@@ -583,6 +603,7 @@ function loseTroops(g, n, x, y, what, big, saveBest) {
 function takePowerup(g, type) {
   const p = POWERUPS[type];
   g.effects[type === "airstrike" ? "strike" : type] = p.time;
+  g.powers[type] = true;
   g.events.power = type;
   floatText(g, g.player.x, PLAYER_Y - 40, p.label + "!", p.color);
   burst(g, g.player.x, PLAYER_Y - 20, p.color, 14);
@@ -619,6 +640,7 @@ export function update(g, dt, saveBest) {
   fx.freeze = Math.max(0, fx.freeze - dt);
   fx.rapid = Math.max(0, fx.rapid - dt);
   fx.strike = Math.max(0, fx.strike - dt);
+  fx.chill = Math.max(0, fx.chill - dt);
   if (striking && fx.strike === 0) airstrike(g);
   const frozen = fx.freeze > 0;
 
@@ -634,17 +656,18 @@ export function update(g, dt, saveBest) {
     g.events.waveStart = true;
     if (g.wave % 3 === 0) {
       g.bossTier++;
-      const kind = BOSS_CYCLE[(g.bossTier - 1) % BOSS_CYCLE.length];
+      const cycle = (ENVS[g.env] || ENVS.bridge).bosses;
+      const kind = cycle[(g.bossTier - 1) % cycle.length];
       spawnZombie(g, kind);
       g.banner = { text: kind.toUpperCase() + " INCOMING!", life: 2.2 };
       g.events.bossSpawn = true;
     }
   }
 
-  // Squad volley - weapon shapes the pattern
+  // Squad volley - weapon shapes the pattern. Iced-up guns stay silent.
   const wp = WEAPONS[g.player.weapon] || WEAPONS.rifle;
-  g.fireTimer -= dt;
-  if (g.fireTimer <= 0) {
+  if (fx.chill <= 0) g.fireTimer -= dt;
+  if (fx.chill <= 0 && g.fireTimer <= 0) {
     g.fireTimer = 1 / (g.player.fireRate * wp.rateMul * (fx.rapid > 0 ? 2 : 1));
     const dmg = Math.max(1, Math.round(g.player.damage * wp.dmgMul));
     for (const s of formationSpots(g.player.troops, g.player.x)) {
@@ -773,6 +796,17 @@ export function update(g, dt, saveBest) {
         g.events.spit = true;
       }
     }
+    if (z.kind === "yeti" && z.y > 40) {
+      z.iceTimer -= dt;
+      if (z.iceTimer <= 0) {
+        // thrown like a spitter's acid: at where the squad stands now
+        z.iceTimer = ICE_EVERY;
+        const dx = g.player.x - z.x, dy = PLAYER_Y - z.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        g.spits.push({ x: z.x, y: z.y, vx: (dx / dist) * SPIT_SPEED, vy: (dy / dist) * SPIT_SPEED, ice: true });
+        g.events.spit = true;
+      }
+    }
     if (z.kind === "summoner" && z.hp > 0 && z.y > 40) {
       z.summonTimer -= dt;
       if (z.summonTimer <= 0) {
@@ -825,15 +859,24 @@ export function update(g, dt, saveBest) {
   g.zombies = g.zombies.filter((z) => z.hp > 0 && z.y < H + 40);
 
   // Acid in flight: it costs a soldier if the squad is still under it when
-  // it comes down, and splashes on the road if not
+  // it comes down, and splashes on the road if not. A yeti's ice costs no
+  // one, but the squad it lands on cannot fire until it has shaken it off.
   for (const sp of g.spits) {
     if (frozen) break;
     sp.x += sp.vx * dt;
     sp.y += sp.vy * dt;
     if (sp.y < PLAYER_Y - 8) continue;
     sp.done = true;
-    if (Math.abs(sp.x - g.player.x) < half + 8) loseTroops(g, 1, sp.x, PLAYER_Y, "ACID ", false, saveBest);
-    else burst(g, sp.x, PLAYER_Y, "#b6e33c", 8);
+    const onSquad = Math.abs(sp.x - g.player.x) < half + 8;
+    if (!onSquad) burst(g, sp.x, PLAYER_Y, sp.ice ? "#bfe6ff" : "#b6e33c", 8);
+    else if (!sp.ice) loseTroops(g, 1, sp.x, PLAYER_Y, "ACID ", false, saveBest);
+    else {
+      fx.chill = CHILL_TIME;
+      g.shake = 6;
+      g.events.chilled = true;
+      burst(g, sp.x, PLAYER_Y, "#bfe6ff", 16);
+      floatText(g, sp.x, PLAYER_Y - 30, "GUNS FROZEN!", "#7fd4ff");
+    }
   }
   g.spits = g.spits.filter((sp) => !sp.done);
   for (const a of ACHIEVEMENTS) if (a.when && !g.achieved[a.id] && a.when(g)) unlock(g, a.id);

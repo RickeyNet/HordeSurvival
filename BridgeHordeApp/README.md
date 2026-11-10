@@ -65,19 +65,20 @@ The app tests run the real Skia drawing code through CanvasKit, so they catch dr
 
 All three are catalogs at the top of `game/core.js`; the numbers are first guesses, to be tuned from playtests.
 
-**Enemies** (`KIND_STATS`). Next to walkers, runners, tanks and the three bosses:
+**Enemies** (`KIND_STATS`). Next to walkers, runners, tanks and the bosses:
 
 - **Bomber** (from wave 4): bursts when shot and hurts the zombies around it, so one bomber can set off the next. One that reaches a wall blows 40% out of it and is gone; one that reaches the squad costs two soldiers.
 - **Weaver** (from wave 6): fast and frail, sways from side to side as it comes.
 - **Spitter** (from wave 8): stops well short of the squad and lobs acid at the spot where the squad stands at that moment. Moving away dodges it; standing still costs a soldier. At most three are on the road at once.
+- **Yeti** (boss of the Frozen Pass): every 4 seconds it throws a lump of ice at the spot where the squad stands at that moment. Moving away dodges it. A hit costs no soldiers, but the squad cannot fire for 1.8 seconds.
 
-**Power-ups** (`POWERUPS`). A crate comes down the road every 14 to 22 seconds; steer the squad into it to take it.
+**Power-ups** (`POWERUPS`). A crate comes down the road every 14 to 22 seconds; steer the squad into it to take it. Until the player has taken their first one, a hint says so whenever a crate is in sight (stored as `hordeCrateHint`, apart from the first-run hints).
 
 - **Freeze**: the horde and its acid stand still for 4 seconds and nothing new arrives. The wave clock keeps running, which the leaderboard's check on run length relies on.
 - **Airstrike**: lands 0.7 seconds later, kills everything on the road and takes 35% of full health off a boss.
 - **Rapid fire**: twice the rate of fire for 6 seconds.
 
-**Maps** (`ENVS`). The Map button on the main menu switches between the Sunset Bridge and the Frozen Pass; the pick is kept on the device. On the pass zombies are 15% slower and have 25% more health. A daily challenge ignores the pick: its map follows from the day, so it is the same for everyone. All maps share the leaderboards.
+**Maps** (`ENVS`). The Map button on the main menu switches between the Sunset Bridge and the Frozen Pass; the pick is kept on the device. On the pass zombies are 15% slower and have 25% more health. Each map lists its bosses (`bosses`), which arrive in that order, over and over: brute, summoner, colossus on the bridge; on the pass the yeti takes the brute's place. A daily challenge ignores the pick: its map follows from the day, so it is the same for everyone. All maps share the leaderboards.
 
 To add a map, add an entry to `ENVS` and a scene for it to `SCENES` in both `App.jsx` and `web/dev.html` (what to draw behind the actors, and optionally in front of them). To add an enemy kind, add it to `KIND_STATS`, give it a share of the spawn roll in `update`, and a palette in `ZPAL` in both renderers.
 
@@ -100,7 +101,7 @@ The seed fixes what comes down the bridge, not how it goes: the gates always arr
 
 `ACHIEVEMENTS` in `game/core.js` lists them: an id, a name, a description, a coin reward, and for most a `when(g)` test that is checked against the run every frame. The others are unlocked where the thing happens (`unlock` in `registerKill` and at game over). Each unlocks once and pays its coins on the spot, also when the run is later abandoned. The app shows a banner when one unlocks and lists them all on the Achievements screen. The rewards are first guesses, like the upgrade prices.
 
-To add one, add an entry to the list. The Achievements screen has room for 13 rows, which is how many there are: a 14th needs smaller rows (`AWARD_ROWS` in `App.jsx` and `web/dev.html`) or a second page.
+To add one, add an entry to the list. The Achievements screen shows eight to a page (`AWARDS_PER_PAGE` in `App.jsx` and `web/dev.html`) and adds pages as the list grows; the arrows next to Back turn the page.
 
 Never reuse or rename an id: unlocked ids are what is stored on the device.
 

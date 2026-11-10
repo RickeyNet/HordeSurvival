@@ -442,6 +442,7 @@ const ZPAL = {
   brute:    { skin: "#c97a4a", shirt: "#6e3a1f" },
   summoner: { skin: "#b08ae0", shirt: "#4b2d73" },
   colossus: { skin: "#9aa7b3", shirt: "#4a5560" },
+  yeti:     { skin: "#eef5fb", shirt: "#a9c8dc" },
   bomber:   { skin: "#d8a04a", shirt: "#7a2f1f" },
   weaver:   { skin: "#7fd6c9", shirt: "#2c5a58" },
   spitter:  { skin: "#c6d94a", shirt: "#4a5a1c" },
@@ -489,6 +490,11 @@ function drawZombie(c, z, frozen) {
   c.drawCircle(p.x, hy, 8 * k, fill(skin, fog));
   c.drawCircle(p.x - 3 * k, hy - 1.5 * k, 1.6 * k, fill(eye, fog));
   c.drawCircle(p.x + 3 * k, hy - 1.5 * k, 1.6 * k, fill(eye, fog));
+  if (z.kind === "yeti") {
+    // horns
+    line(c, p.x - 5 * k, hy - 6 * k, p.x - 10 * k, hy - 13 * k, stroke("#5d7f99", 2.6 * k, fog));
+    line(c, p.x + 5 * k, hy - 6 * k, p.x + 10 * k, hy - 13 * k, stroke("#5d7f99", 2.6 * k, fog));
+  }
   if (z.kind === "spitter") c.drawCircle(p.x, hy + 3.5 * k, 3 * k, fill(frozen ? "#dff2ff" : "#b6e33c", fog)); // mouth full of acid
   else rect(c, p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k, fill("#1d2410", fog));
 
@@ -499,7 +505,8 @@ function drawZombie(c, z, frozen) {
   }
 }
 
-function drawSoldier(c, x, y, firing) {
+// cold: the squad's guns are iced up (a yeti's throw), so it is drawn frosted over.
+function drawSoldier(c, x, y, firing, cold) {
   const p = proj(x, y);
   const k = p.s * ACTOR_SCALE;
   shadow(c, p.x, p.y, 10 * k);
@@ -510,10 +517,10 @@ function drawSoldier(c, x, y, firing) {
   poly(c, [
     [p.x - 8 * k, p.y - 32 * k], [p.x + 8 * k, p.y - 32 * k],
     [p.x + 7 * k, p.y - 12 * k], [p.x - 7 * k, p.y - 12 * k],
-  ], fill("#4a5d3a"));
-  rect(c, p.x - 5 * k, p.y - 29 * k, 10 * k, 11 * k, fill("#3a4a2e"));
+  ], fill(cold ? "#8fbfe0" : "#4a5d3a"));
+  rect(c, p.x - 5 * k, p.y - 29 * k, 10 * k, 11 * k, fill(cold ? "#6fa8d6" : "#3a4a2e"));
 
-  line(c, p.x + 5 * k, p.y - 30 * k, p.x + 7 * k, p.y - 46 * k, stroke("#1c1f26", 3 * k));
+  line(c, p.x + 5 * k, p.y - 30 * k, p.x + 7 * k, p.y - 46 * k, stroke(cold ? "#dff2ff" : "#1c1f26", 3 * k));
 
   if (firing) {
     const fx = p.x + 7.5 * k, fy = p.y - 49 * k;
@@ -526,8 +533,8 @@ function drawSoldier(c, x, y, firing) {
   const helmet = Skia.PathBuilder.Make();
   helmet.addArc(Skia.XYWHRect(p.x - 6.5 * k, p.y - 44.5 * k, 13 * k, 13 * k), 180, 180);
   helmet.close();
-  c.drawPath(helmet.detach(), fill("#39452e"));
-  rect(c, p.x - 6.5 * k, p.y - 38 * k, 13 * k, 3 * k, fill("#39452e"));
+  c.drawPath(helmet.detach(), fill(cold ? "#bfe6ff" : "#39452e"));
+  rect(c, p.x - 6.5 * k, p.y - 38 * k, 13 * k, 3 * k, fill(cold ? "#bfe6ff" : "#39452e"));
   rect(c, p.x - 4 * k, p.y - 35.5 * k, 8 * k, 2.5 * k, fill("#c9a06c"));
 }
 
@@ -560,13 +567,14 @@ function drawBullet(c, b) {
 }
 
 
-// Acid lobbed by a spitter.
+// Acid lobbed by a spitter, or a lump of ice thrown by a yeti.
 function drawSpit(c, sp) {
   const p = proj(sp.x, sp.y);
   const fog = fogAlpha(sp.y);
-  shadow(c, p.x, p.y, 8 * p.s);
-  c.drawCircle(p.x, p.y - 26 * p.s, 8 * p.s, fill("#b6e33c", fog));
-  c.drawCircle(p.x - 2.5 * p.s, p.y - 28.5 * p.s, 3 * p.s, fill("#e6ff8a", fog));
+  const r = sp.ice ? 11 : 8;
+  shadow(c, p.x, p.y, r * p.s);
+  c.drawCircle(p.x, p.y - 26 * p.s, r * p.s, fill(sp.ice ? "#9fd8ff" : "#b6e33c", fog));
+  c.drawCircle(p.x - 2.5 * p.s, p.y - 28.5 * p.s, (r - 5) * p.s, fill(sp.ice ? "#ffffff" : "#e6ff8a", fog));
 }
 
 // A power-up crate (see POWERUPS in game/core.js).
@@ -637,14 +645,16 @@ function drawHUD(c, g) {
   if (g.daily !== null) centerText(c, "DAILY CHALLENGE", G.H - 36, fonts.tiny, 13, DAILY_COLOR);
 }
 
-// Running power-ups, as shrinking bars under the top bar.
+// Running power-ups, as shrinking bars under the top bar. Iced-up guns (a
+// yeti's throw) get a bar of their own.
+const CHILL_BAR = { label: "GUNS FROZEN", color: "#e0342f", time: G.CHILL_TIME };
 function drawEffects(c, g) {
   const fx = g.effects;
-  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike]].filter((e) => e[1] > 0);
-  const w = 112, h = 20, gap = 8;
+  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike], ["chill", fx.chill]].filter((e) => e[1] > 0);
+  const w = on.length > 3 ? 88 : 112, h = 20, gap = 8;
   let x = G.W / 2 - (on.length * (w + gap) - gap) / 2;
   for (const [key, left] of on) {
-    const pu = G.POWERUPS[key];
+    const pu = key === "chill" ? CHILL_BAR : G.POWERUPS[key];
     c.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, 134, w, h), 6, 6), fill("rgba(5,8,14,0.75)"));
     c.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, 134, w * Math.min(1, left / pu.time), h), 6, 6), fill(pu.color, 0.45));
     text(c, pu.label, x + w / 2 - textWidth(fonts.tiny, pu.label, 13) / 2, 149, fill("#ffffff"), fonts.tiny);
@@ -666,6 +676,7 @@ export const RUN_MENU_BTNS = { map: MAP_BTN, resume: btn(310, 64), fight: btn(39
 const RUN_KEY = "hordeRun";
 const META_KEY = "hordeMeta"; // coins, upgrades, achievements, daily best, picked map (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
+const CRATE_HINT_KEY = "hordeCrateHint"; // "1" once the player has taken a crate
 // "Start a new run?" dialog, shown before New Run discards a waiting run.
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
@@ -673,9 +684,15 @@ export const BACK_BTN = btn(G.H - 120, 50); // settings screen
 // Leaderboard screen: three tabs on top, two buttons at the bottom.
 const tabBtn = (i) => ({ x: 24 + i * 120, y: 104, w: 112, h: 36 });
 export const BOARD_BTNS = { all: tabBtn(0), week: tabBtn(1), day: tabBtn(2), name: half(24, 654, 48), close: half(204, 654, 48) };
-// Achievements screen: one row per entry in G.ACHIEVEMENTS.
-export const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({ ...a, x: 24, y: 112 + i * 41, w: G.W - 48, h: 37 }));
+// Achievements screen: one row per entry in G.ACHIEVEMENTS, AWARDS_PER_PAGE
+// to a page. The arrows either side of Back turn the page.
+export const AWARDS_PER_PAGE = 8;
+export const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({
+  ...a, page: Math.floor(i / AWARDS_PER_PAGE), x: 24, y: 112 + (i % AWARDS_PER_PAGE) * 62, w: G.W - 48, h: 56,
+}));
+export const AWARD_PAGES = Math.ceil(AWARD_ROWS.length / AWARDS_PER_PAGE);
 export const AWARDS_BACK_BTN = btn(G.H - 68, 48);
+export const AWARD_PAGE_BTNS = { prev: { x: 24, y: G.H - 68, w: 48, h: 48 }, next: { x: G.W - 72, y: G.H - 68, w: 48, h: 48 } };
 // Name picker: a row of step buttons per part of the name (see names.js).
 const step = (x, row, field, delta, label) => ({ x, y: 200 + row * 80, w: 56, h: 56, field, delta, label });
 export const NAME_STEPS = [
@@ -767,21 +784,25 @@ function drawMenu(c, g) {
   for (const key of Object.keys(grid)) drawButton(c, btns[key], grid[key], false, k);
 }
 
-function drawAwards(c, g) {
+function drawAwards(c, g, page) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.94)"));
   centerText(c, "ACHIEVEMENTS", 64, fonts.title, 40, "#ffffff");
   const done = AWARD_ROWS.filter((r) => g.achieved[r.id]).length;
   centerText(c, done + " of " + AWARD_ROWS.length + " unlocked", 94, fonts.small, 16, "#9fd4ff");
   for (const r of AWARD_ROWS) {
+    if (r.page !== page) continue;
     const on = !!g.achieved[r.id];
     c.drawRRect(Skia.RRectXY(Skia.XYWHRect(r.x, r.y, r.w, r.h), 10, 10), fill(on ? "rgba(245,194,17,0.14)" : "rgba(255,255,255,0.07)"));
     // a pip that fills in once the achievement is unlocked
     if (on) c.drawCircle(r.x + 20, r.y + r.h / 2, 7, fill("#f5c211"));
     else c.drawCircle(r.x + 20, r.y + r.h / 2, 6, stroke("#8b93a3", 2));
-    text(c, r.label, r.x + 38, r.y + 16, fill(on ? "#f5c211" : "#ffffff"), fonts.strong);
-    text(c, r.desc, r.x + 38, r.y + 31, fill(on ? "#c8d3e0" : "#8b93a3"), fonts.tiny);
+    text(c, r.label, r.x + 38, r.y + 24, fill(on ? "#f5c211" : "#ffffff"), fonts.strong);
+    text(c, r.desc, r.x + 38, r.y + 43, fill(on ? "#c8d3e0" : "#8b93a3"), fonts.tiny);
     drawCoins(c, r.x + r.w - 34, r.y + r.h / 2 + 6, r.coins, fonts.small, 16, on ? "#f5c211" : "#8b93a3");
   }
+  centerText(c, "PAGE " + (page + 1) + " OF " + AWARD_PAGES, 632, fonts.tiny, 13, "#8b93a3");
+  if (page > 0) drawButton(c, AWARD_PAGE_BTNS.prev, "<");
+  if (page < AWARD_PAGES - 1) drawButton(c, AWARD_PAGE_BTNS.next, ">");
   drawButton(c, AWARDS_BACK_BTN, "BACK");
 }
 
@@ -938,12 +959,17 @@ function drawNamePicker(c, pick) {
 }
 
 // ---------- First-run hints ----------
-// Shown during wave 1 until the player has moved and taken a gate.
-// tu: { on, moved } - on while the hints are still owed, moved in world units.
+// Shown during wave 1 until the player has moved and taken a gate. After
+// those, whenever a crate is on the road, until the player has taken one.
+// tu: { on, moved, crate } - on while the first hints are still owed, moved
+// in world units, crate while the one for crates is.
 export function tutorialHint(tu, g) {
-  if (!tu.on || g.state !== "playing" || g.wave > 1) return null;
-  if (tu.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
-  if (g.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  if (g.state !== "playing") return null;
+  if (tu.on && g.wave === 1) {
+    if (tu.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
+    if (g.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  }
+  if (tu.crate && g.drops.some((d) => d.y > 0)) return { title: "GRAB THE CRATE", sub: "Steer into it for a power-up" };
   return null;
 }
 function drawHint(c, h) {
@@ -1030,9 +1056,10 @@ function drawGame(c, g, layout, t, ui) {
 
   for (const b of g.bullets) drawBullet(c, b);
 
-  const firing = g.fireTimer > 1 / g.player.fireRate - 0.07;
+  const cold = g.effects.chill > 0;
+  const firing = !cold && g.fireTimer > 1 / g.player.fireRate - 0.07;
   const spots = G.formationSpots(g.player.troops, g.player.x);
-  for (let i = spots.length - 1; i >= 0; i--) drawSoldier(c, spots[i].x, spots[i].y, firing);
+  for (let i = spots.length - 1; i >= 0; i--) drawSoldier(c, spots[i].x, spots[i].y, firing, cold);
 
   for (const p of g.particles) {
     const q = proj(p.x, p.y);
@@ -1063,7 +1090,7 @@ function drawGame(c, g, layout, t, ui) {
   else if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
   else if (ui.shop) drawShop(c, g);
-  else if (ui.awards) drawAwards(c, g);
+  else if (ui.awards) drawAwards(c, g, ui.awardsPage);
   else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g, ui.confirmNew);
   else if (g.state === "menu") drawMenu(c, g);
   else if (g.state !== "playing") drawOverlay(c, g, ui.standing);
@@ -1085,7 +1112,8 @@ export default function App() {
   const awardsOpen = useRef(false); // achievements screen
   const confirmNew = useRef(false); // "start a new run?" dialog over the menu: false, "run" or "daily"
   const toasts = useRef([]); // unlocked achievements still to announce: { id, until }
-  const tutorial = useRef({ on: false, moved: 0 }); // first-run hints, see tutorialHint
+  const awardsPage = useRef(0); // the page of it that is showing
+  const tutorial = useRef({ on: false, moved: 0, crate: false }); // first-run hints, see tutorialHint
 
   // Show one tab of the leaderboard, after `first` (a name being saved) is done.
   const openBoard = (tab = "all", first = Promise.resolve()) => {
@@ -1192,6 +1220,9 @@ export default function App() {
     AsyncStorage.getItem(TUTORIAL_KEY)
       .then((v) => { tutorial.current.on = v !== "1"; })
       .catch(() => {});
+    AsyncStorage.getItem(CRATE_HINT_KEY)
+      .then((v) => { tutorial.current.crate = v !== "1"; })
+      .catch(() => {});
   }, []);
 
   // Auto-pause (and silence the music) when the app goes to the background
@@ -1230,7 +1261,7 @@ export default function App() {
         if (g.state === "gameover") haptic(g.newBest ? "notificationSuccess" : "notificationError");
         else if (g.events.achieved.length) haptic("notificationSuccess");
         else if (g.events.bossSpawn) haptic("notificationWarning");
-        else if (g.events.troopLost) haptic("impactHeavy");
+        else if (g.events.troopLost || g.events.chilled) haptic("impactHeavy");
         else if (g.events.power) haptic("impactMedium");
         // announce new achievements one after the other, and keep them (with their coins)
         if (g.events.achieved.length) {
@@ -1241,6 +1272,11 @@ export default function App() {
         if (tutorial.current.on && (g.events.gate || g.wave > 1)) {
           tutorial.current.on = false;
           AsyncStorage.setItem(TUTORIAL_KEY, "1").catch(() => {});
+        }
+        // and the one for crates once a crate is taken
+        if (tutorial.current.crate && g.events.power) {
+          tutorial.current.crate = false;
+          AsyncStorage.setItem(CRATE_HINT_KEY, "1").catch(() => {});
         }
       }
       if (g.state === "gameover" && prevState === "playing") {
@@ -1340,10 +1376,12 @@ export default function App() {
       return;
     }
     if (awardsOpen.current) {
-      if (hit(AWARDS_BACK_BTN, wx, wy)) {
-        awardsOpen.current = false;
-        if (engine) engine.click();
-      }
+      const page = awardsPage.current;
+      if (hit(AWARDS_BACK_BTN, wx, wy)) awardsOpen.current = false;
+      else if (page > 0 && hit(AWARD_PAGE_BTNS.prev, wx, wy)) awardsPage.current = page - 1;
+      else if (page < AWARD_PAGES - 1 && hit(AWARD_PAGE_BTNS.next, wx, wy)) awardsPage.current = page + 1;
+      else return;
+      if (engine) engine.click();
       return;
     }
     const today = G.dayOf(Date.now());
@@ -1377,6 +1415,7 @@ export default function App() {
         if (engine) engine.click();
       } else if (hit(btns.awards, wx, wy)) {
         awardsOpen.current = true;
+        awardsPage.current = 0;
         if (engine) engine.click();
       } else if (hit(btns.board, wx, wy)) {
         openBoard();
@@ -1416,7 +1455,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, shop: shopOpen.current, awards: awardsOpen.current, confirmNew: confirmNew.current, toast: toasts.current[0] && G.ACHIEVEMENTS.find((a) => a.id === toasts.current[0].id), hint: tutorialHint(tutorial.current, game.current) }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, shop: shopOpen.current, awards: awardsOpen.current, awardsPage: awardsPage.current, confirmNew: confirmNew.current, toast: toasts.current[0] && G.ACHIEVEMENTS.find((a) => a.id === toasts.current[0].id), hint: tutorialHint(tutorial.current, game.current) }));
 
   return (
     <View

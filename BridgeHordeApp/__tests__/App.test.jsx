@@ -201,6 +201,43 @@ test('a run left for the main menu can be resumed, and survives a restart', asyn
   jest.useRealTimers();
 });
 
+test('a crate brings its own hint until one is taken', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  jest.useFakeTimers();
+  const app = await mount();
+  const { G, MENU_BTNS, tutorialHint } = app;
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  const spy = jest.spyOn(G, 'resetRun');
+  await app.tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  g.zombieTimer = 1e9;
+  g.gateTimer = 1e9;
+  g.wave = 2; // past the first-run hints
+  expect(tutorialHint({ on: true, moved: 0, crate: true }, g)).toBeNull(); // no crate yet
+  g.drops.push({ x: G.ROAD_L + 30, y: -10, type: 'rapid' });
+  expect(tutorialHint({ on: false, moved: 0, crate: true }, g)).toBeNull(); // not in sight yet
+  g.drops[0].y = 100;
+  expect(tutorialHint({ on: false, moved: 0, crate: true }, g).title).toMatch(/CRATE/);
+  expect(tutorialHint({ on: false, moved: 0, crate: false }, g)).toBeNull();
+  // the first-run hints come first
+  g.wave = 1;
+  expect(tutorialHint({ on: true, moved: 0, crate: true }, g).title).toMatch(/DRAG/);
+  g.wave = 2;
+  await app.tap(G.W / 2, 400); // draws the hint for a few frames
+  expect(await AsyncStorage.getItem('hordeCrateHint')).toBeNull();
+  // the squad takes it: the hint is done for good
+  g.drops[0].x = g.player.x;
+  g.drops[0].y = G.PLAYER_Y - 5;
+  await app.tap(G.W / 2, 400);
+  expect(g.drops).toHaveLength(0);
+  expect(await AsyncStorage.getItem('hordeCrateHint')).toBe('1');
+  spy.mockRestore();
+  await ReactTestRenderer.act(() => {
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
 test('first run: hints for moving and gates, shown only once', async () => {
   const AsyncStorage = require('@react-native-async-storage/async-storage').default;
   jest.useFakeTimers();
@@ -363,15 +400,24 @@ test('achievements: unlocked in a run, announced, saved, and listed on their scr
   const haptics = require('react-native-haptic-feedback');
   jest.useFakeTimers();
   let app = await mount();
-  const { G, MENU_BTNS, AWARD_ROWS, AWARDS_BACK_BTN, HOME_BTN } = app;
+  const { G, MENU_BTNS, AWARD_ROWS, AWARD_PAGES, AWARD_PAGE_BTNS, AWARDS_PER_PAGE, AWARDS_BACK_BTN, HOME_BTN } = app;
   expect(AWARD_ROWS.map((r) => r.id)).toEqual(G.ACHIEVEMENTS.map((a) => a.id));
-  expect(AWARD_ROWS[AWARD_ROWS.length - 1].y + AWARD_ROWS[0].h).toBeLessThan(AWARDS_BACK_BTN.y); // the list fits above Back
+  // every page fits between the title and the page number above Back, and no page is empty
+  for (const r of AWARD_ROWS) expect(r.y + r.h).toBeLessThan(AWARDS_BACK_BTN.y - 30);
+  expect(AWARD_ROWS.map((r) => r.page)).toEqual(AWARD_ROWS.map((r, i) => Math.floor(i / AWARDS_PER_PAGE)));
+  expect(AWARD_PAGES).toBe(AWARD_ROWS[AWARD_ROWS.length - 1].page + 1);
+  expect(AWARD_PAGES).toBeGreaterThan(1);
   const spy = jest.spyOn(G, 'resetRun');
   await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
   // the screen, with nothing unlocked: only Back does anything
   await app.tapBtn(MENU_BTNS.awards);
   await app.tapBtn(MENU_BTNS.fight);
   await app.tapBtn(AWARD_ROWS[0]);
+  expect(spy).not.toHaveBeenCalled();
+  // through the pages and back; the arrows do nothing past either end
+  await app.tapBtn(AWARD_PAGE_BTNS.prev);
+  for (let i = 0; i < AWARD_PAGES + 1; i++) await app.tapBtn(AWARD_PAGE_BTNS.next);
+  for (let i = 0; i < AWARD_PAGES + 1; i++) await app.tapBtn(AWARD_PAGE_BTNS.prev);
   expect(spy).not.toHaveBeenCalled();
   await app.tapBtn(AWARDS_BACK_BTN);
   await app.tapBtn(MENU_BTNS.fight);
@@ -430,7 +476,9 @@ test('the map button changes the environment, which is drawn, saved, and used by
     troopCost: 1, scoreVal: 1, wob: 0, summonTimer: 0, cx: x, phase: 0, spitTimer: 99,
   });
   g.zombies.push(z('bomber', 80), z('weaver', 200), z('spitter', 320));
-  g.spits.push({ x: 300, y: 320, vx: 0, vy: 1 });
+  g.spits.push({ x: 300, y: 320, vx: 0, vy: 1 }, { x: 200, y: 320, vx: 0, vy: 1, ice: true });
+  g.zombies.push({ ...z('yeti', 140), boss: true, big: true, size: 32, iceTimer: 99 });
+  g.effects.chill = 5;
   for (const type of Object.keys(G.POWERUPS)) g.drops.push({ x: 60, y: 200, type });
   g.effects.rapid = 5;
   g.effects.strike = 5;

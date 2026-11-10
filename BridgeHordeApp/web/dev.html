@@ -72,6 +72,7 @@ const store = {
 const RUN_KEY = "hordeRun";
 const META_KEY = "hordeMeta"; // coins, upgrades, achievements, daily best (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
+const CRATE_HINT_KEY = "hordeCrateHint"; // "1" once the player has taken a crate
 const SETTINGS_KEY = "hordeSettings";
 const settings = { music: true, sfx: true, shake: true };
 try {
@@ -98,9 +99,9 @@ if (savedRun) G.loadRun(game, savedRun);
 
 // ---------- Screens (mirrors App.jsx) ----------
 // confirmNew: false, or the kind of run ("run" / "daily") that would replace the waiting one
-const ui = { board: false, settings: false, shop: false, awards: false, confirmNew: false };
+const ui = { board: false, settings: false, shop: false, awards: false, awardsPage: 0, confirmNew: false };
 const toasts = []; // unlocked achievements still to announce: { id, until }
-const tutorial = { on: store.get(TUTORIAL_KEY) !== "1", moved: 0 };
+const tutorial = { on: store.get(TUTORIAL_KEY) !== "1", moved: 0, crate: store.get(CRATE_HINT_KEY) !== "1" };
 const DAILY_COLOR = "#4dd0c4"; // everything that marks the daily challenge
 const today = () => G.dayOf(Date.now());
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
@@ -111,9 +112,15 @@ const menuGrid = (y) => ({ shop: half(24, y, 54), awards: half(204, y, 54), boar
 const MAP_BTN = { x: 60, y: 96, w: G.W - 120, h: 52 };
 const MENU_BTNS = { map: MAP_BTN, fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
 const RUN_MENU_BTNS = { map: MAP_BTN, resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
-// Achievements screen: one row per entry in G.ACHIEVEMENTS.
-const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({ ...a, x: 24, y: 112 + i * 41, w: G.W - 48, h: 37 }));
+// Achievements screen: one row per entry in G.ACHIEVEMENTS, AWARDS_PER_PAGE
+// to a page. The arrows either side of Back turn the page.
+const AWARDS_PER_PAGE = 8;
+const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({
+  ...a, page: Math.floor(i / AWARDS_PER_PAGE), x: 24, y: 112 + (i % AWARDS_PER_PAGE) * 62, w: G.W - 48, h: 56,
+}));
+const AWARD_PAGES = Math.ceil(AWARD_ROWS.length / AWARDS_PER_PAGE);
 const AWARDS_BACK_BTN = btn(G.H - 68, 48);
+const AWARD_PAGE_BTNS = { prev: { x: 24, y: G.H - 68, w: 48, h: 48 }, next: { x: G.W - 72, y: G.H - 68, w: 48, h: 48 } };
 // Start again with the kind of run that just ended.
 const retry = () => G.resetRun(game, game.daily === null ? null : today());
 const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
@@ -165,6 +172,8 @@ canvas.addEventListener("pointerdown", (e) => {
   }
   if (ui.awards) {
     if (hit(AWARDS_BACK_BTN, wx, wy)) { ui.awards = false; click(); }
+    else if (ui.awardsPage > 0 && hit(AWARD_PAGE_BTNS.prev, wx, wy)) { ui.awardsPage--; click(); }
+    else if (ui.awardsPage < AWARD_PAGES - 1 && hit(AWARD_PAGE_BTNS.next, wx, wy)) { ui.awardsPage++; click(); }
     return;
   }
   if (game.state === "menu") {
@@ -185,7 +194,7 @@ canvas.addEventListener("pointerdown", (e) => {
     }
     else if (hit(btns.map, wx, wy)) { G.cycleEnv(game); storeMeta(); click(); }
     else if (hit(btns.shop, wx, wy)) { ui.shop = true; click(); }
-    else if (hit(btns.awards, wx, wy)) { ui.awards = true; click(); }
+    else if (hit(btns.awards, wx, wy)) { ui.awards = true; ui.awardsPage = 0; click(); }
     else if (hit(btns.board, wx, wy)) { ui.board = true; click(); }
     else if (hit(btns.settings, wx, wy)) { ui.settings = true; click(); }
     return;
@@ -549,6 +558,7 @@ const ZPAL = {
   brute:    { skin: "#c97a4a", shirt: "#6e3a1f" },
   summoner: { skin: "#b08ae0", shirt: "#4b2d73" },
   colossus: { skin: "#9aa7b3", shirt: "#4a5560" },
+  yeti:     { skin: "#eef5fb", shirt: "#a9c8dc" },
   bomber:   { skin: "#d8a04a", shirt: "#7a2f1f" },
   weaver:   { skin: "#7fd6c9", shirt: "#2c5a58" },
   spitter:  { skin: "#c6d94a", shirt: "#4a5a1c" },
@@ -617,6 +627,13 @@ function drawZombie(z, frozen) {
   ctx.fillStyle = z.boss ? "#e02020" : "#1d2410";
   ctx.beginPath(); ctx.arc(p.x - 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.arc(p.x + 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
+  if (z.kind === "yeti") {
+    // horns
+    ctx.strokeStyle = "#5d7f99";
+    ctx.lineWidth = 2.6 * k;
+    ctx.beginPath(); ctx.moveTo(p.x - 5 * k, hy - 6 * k); ctx.lineTo(p.x - 10 * k, hy - 13 * k); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p.x + 5 * k, hy - 6 * k); ctx.lineTo(p.x + 10 * k, hy - 13 * k); ctx.stroke();
+  }
   if (z.kind === "spitter") {
     ctx.fillStyle = frozen ? "#dff2ff" : "#b6e33c"; // mouth full of acid
     ctx.beginPath(); ctx.arc(p.x, hy + 3.5 * k, 3 * k, 0, Math.PI * 2); ctx.fill();
@@ -636,7 +653,8 @@ function drawZombie(z, frozen) {
   ctx.globalAlpha = 1;
 }
 
-function drawSoldier(x, y, firing) {
+// cold: the squad's guns are iced up (a yeti's throw), so it is drawn frosted over.
+function drawSoldier(x, y, firing, cold) {
   const p = proj(x, y);
   const k = p.s * ACTOR_SCALE;
   shadow(p.x, p.y, 10 * k);
@@ -649,18 +667,18 @@ function drawSoldier(x, y, firing) {
   ctx.beginPath(); ctx.moveTo(p.x + 4 * k, p.y - 14 * k); ctx.lineTo(p.x + 4 * k, p.y); ctx.stroke();
 
   // torso (seen from behind) + backpack
-  ctx.fillStyle = "#4a5d3a";
+  ctx.fillStyle = cold ? "#8fbfe0" : "#4a5d3a";
   ctx.beginPath();
   ctx.moveTo(p.x - 8 * k, p.y - 32 * k);
   ctx.lineTo(p.x + 8 * k, p.y - 32 * k);
   ctx.lineTo(p.x + 7 * k, p.y - 12 * k);
   ctx.lineTo(p.x - 7 * k, p.y - 12 * k);
   ctx.closePath(); ctx.fill();
-  ctx.fillStyle = "#3a4a2e";
+  ctx.fillStyle = cold ? "#6fa8d6" : "#3a4a2e";
   ctx.fillRect(p.x - 5 * k, p.y - 29 * k, 10 * k, 11 * k);
 
   // rifle poking up over the right shoulder
-  ctx.strokeStyle = "#1c1f26";
+  ctx.strokeStyle = cold ? "#dff2ff" : "#1c1f26";
   ctx.lineWidth = 3 * k;
   ctx.beginPath(); ctx.moveTo(p.x + 5 * k, p.y - 30 * k); ctx.lineTo(p.x + 7 * k, p.y - 46 * k); ctx.stroke();
 
@@ -679,7 +697,7 @@ function drawSoldier(x, y, firing) {
   }
 
   // helmet
-  ctx.fillStyle = "#39452e";
+  ctx.fillStyle = cold ? "#bfe6ff" : "#39452e";
   ctx.beginPath(); ctx.arc(p.x, p.y - 38 * k, 6.5 * k, Math.PI, 0); ctx.fill();
   ctx.fillRect(p.x - 6.5 * k, p.y - 38 * k, 13 * k, 3 * k);
   ctx.fillStyle = "#c9a06c";
@@ -733,15 +751,16 @@ function drawBullet(b) {
 }
 
 
-// Acid lobbed by a spitter.
+// Acid lobbed by a spitter, or a lump of ice thrown by a yeti.
 function drawSpit(sp) {
   const p = proj(sp.x, sp.y);
+  const r = sp.ice ? 11 : 8;
   ctx.globalAlpha = fogAlpha(sp.y);
-  shadow(p.x, p.y, 8 * p.s);
-  ctx.fillStyle = "#b6e33c";
-  ctx.beginPath(); ctx.arc(p.x, p.y - 26 * p.s, 8 * p.s, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#e6ff8a";
-  ctx.beginPath(); ctx.arc(p.x - 2.5 * p.s, p.y - 28.5 * p.s, 3 * p.s, 0, Math.PI * 2); ctx.fill();
+  shadow(p.x, p.y, r * p.s);
+  ctx.fillStyle = sp.ice ? "#9fd8ff" : "#b6e33c";
+  ctx.beginPath(); ctx.arc(p.x, p.y - 26 * p.s, r * p.s, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = sp.ice ? "#ffffff" : "#e6ff8a";
+  ctx.beginPath(); ctx.arc(p.x - 2.5 * p.s, p.y - 28.5 * p.s, (r - 5) * p.s, 0, Math.PI * 2); ctx.fill();
   ctx.globalAlpha = 1;
 }
 
@@ -844,14 +863,16 @@ function drawHUD() {
   );
   if (game.daily !== null) centerText("DAILY CHALLENGE", G.H - 36, "13", DAILY_COLOR);
 }
-// Running power-ups, as shrinking bars under the top bar.
+// Running power-ups, as shrinking bars under the top bar. Iced-up guns (a
+// yeti's throw) get a bar of their own.
+const CHILL_BAR = { label: "GUNS FROZEN", color: "#e0342f", time: G.CHILL_TIME };
 function drawEffects() {
   const fx = game.effects;
-  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike]].filter((e) => e[1] > 0);
-  const w = 112, h = 20, gap = 8;
+  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike], ["chill", fx.chill]].filter((e) => e[1] > 0);
+  const w = on.length > 3 ? 88 : 112, h = 20, gap = 8;
   let x = G.W / 2 - (on.length * (w + gap) - gap) / 2;
   for (const [key, left] of on) {
-    const pu = G.POWERUPS[key];
+    const pu = key === "chill" ? CHILL_BAR : G.POWERUPS[key];
     panel(x, 134, w, h, 6, "rgba(5,8,14,0.75)");
     ctx.globalAlpha = 0.45;
     panel(x, 134, w * Math.min(1, left / pu.time), h, 6, pu.color);
@@ -960,16 +981,20 @@ function drawAwards() {
   const done = AWARD_ROWS.filter((r) => game.achieved[r.id]).length;
   centerText(done + " of " + AWARD_ROWS.length + " unlocked", 94, "16", "#9fd4ff");
   for (const r of AWARD_ROWS) {
+    if (r.page !== ui.awardsPage) continue;
     const on = !!game.achieved[r.id];
     panel(r.x, r.y, r.w, r.h, 10, on ? "rgba(245,194,17,0.14)" : "rgba(255,255,255,0.07)");
     // a pip that fills in once the achievement is unlocked
     ctx.beginPath(); ctx.arc(r.x + 20, r.y + r.h / 2, on ? 7 : 6, 0, Math.PI * 2);
     if (on) { ctx.fillStyle = "#f5c211"; ctx.fill(); }
     else { ctx.strokeStyle = "#8b93a3"; ctx.lineWidth = 2; ctx.stroke(); }
-    label(r.label, r.x + 38, r.y + 16, "bold 16", on ? "#f5c211" : "#fff", "left");
-    label(r.desc, r.x + 38, r.y + 31, "13", on ? "#c8d3e0" : "#8b93a3", "left");
+    label(r.label, r.x + 38, r.y + 24, "bold 16", on ? "#f5c211" : "#fff", "left");
+    label(r.desc, r.x + 38, r.y + 43, "13", on ? "#c8d3e0" : "#8b93a3", "left");
     drawCoins(r.x + r.w - 34, r.y + r.h / 2 + 6, r.coins, "16", 16, on ? "#f5c211" : "#8b93a3");
   }
+  centerText("PAGE " + (ui.awardsPage + 1) + " OF " + AWARD_PAGES, 632, "13", "#8b93a3");
+  if (ui.awardsPage > 0) drawButton(AWARD_PAGE_BTNS.prev, "<");
+  if (ui.awardsPage < AWARD_PAGES - 1) drawButton(AWARD_PAGE_BTNS.next, ">");
   drawButton(AWARDS_BACK_BTN, "BACK");
 }
 
@@ -1057,11 +1082,15 @@ function drawBoard() {
   centerText("TAP TO CLOSE", G.H - 34, "bold 24", "#f5c211");
 }
 
-// First-run hints: shown during wave 1 until the player has moved and taken a gate.
+// First-run hints: shown during wave 1 until the player has moved and taken a
+// gate. After those, whenever a crate is on the road, until one is taken.
 function tutorialHint() {
-  if (!tutorial.on || game.state !== "playing" || game.wave > 1) return null;
-  if (tutorial.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
-  if (game.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  if (game.state !== "playing") return null;
+  if (tutorial.on && game.wave === 1) {
+    if (tutorial.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
+    if (game.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  }
+  if (tutorial.crate && game.drops.some((d) => d.y > 0)) return { title: "GRAB THE CRATE", sub: "Steer into it for a power-up" };
   return null;
 }
 function drawHint(h) {
@@ -1134,9 +1163,10 @@ function draw() {
 
   for (const b of game.bullets) drawBullet(b);
 
-  const firing = game.fireTimer > 1 / game.player.fireRate - 0.07;
+  const cold = game.effects.chill > 0;
+  const firing = !cold && game.fireTimer > 1 / game.player.fireRate - 0.07;
   const spots = G.formationSpots(game.player.troops, game.player.x);
-  for (let i = spots.length - 1; i >= 0; i--) drawSoldier(spots[i].x, spots[i].y, firing);
+  for (let i = spots.length - 1; i >= 0; i--) drawSoldier(spots[i].x, spots[i].y, firing, cold);
 
   for (const p of game.particles) {
     const q = proj(p.x, p.y);
@@ -1214,6 +1244,11 @@ function loop(now) {
     if (tutorial.on && (game.events.gate || game.wave > 1)) {
       tutorial.on = false;
       store.set(TUTORIAL_KEY, "1");
+    }
+    // and the one for crates once a crate is taken
+    if (tutorial.crate && game.events.power) {
+      tutorial.crate = false;
+      store.set(CRATE_HINT_KEY, "1");
     }
   }
   if (engine) {
