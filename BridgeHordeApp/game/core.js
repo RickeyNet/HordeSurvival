@@ -63,6 +63,7 @@ export function newGame() {
     events: freshEvents(),
     banner: { text: "", life: 0 }, // big center-screen announcement
     score: 0,
+    kills: 0,
     best: 0,
     newBest: false,
     wave: 1,
@@ -239,6 +240,7 @@ function floatText(g, x, y, str, color) {
 function registerKill(g, z) {
   if (z.scored) return;
   z.scored = true;
+  g.kills++;
   g.score += z.scoreVal;
   const col = z.boss ? "#ffd84d" : z.kind === "tank" ? "#7fa08a" : "#5aa832";
   burst(g, z.x, z.y, col, z.boss ? 30 : z.big ? 22 : 8);

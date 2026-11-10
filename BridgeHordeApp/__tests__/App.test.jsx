@@ -78,7 +78,7 @@ test('settings: toggles are saved and Back returns to the menu', async () => {
   const spy = jest.spyOn(G, 'resetRun');
   await tapBtn(MENU_BTNS.settings);
   await tapBtn(SETTING_ROWS[0]); // music off
-  expect(JSON.parse(await AsyncStorage.getItem('hordeSettings'))).toEqual({ music: false, sfx: true, shake: true });
+  expect(JSON.parse(await AsyncStorage.getItem('hordeSettings'))).toEqual({ music: false, sfx: true, shake: true, haptics: true });
   await tapBtn(SETTING_ROWS[0]); // back on
   expect(JSON.parse(await AsyncStorage.getItem('hordeSettings')).music).toBe(true);
   await tapBtn(MENU_BTNS.fight); // settings still open: must not start a run
@@ -87,6 +87,32 @@ test('settings: toggles are saved and Back returns to the menu', async () => {
   await tapBtn(MENU_BTNS.fight);
   expect(spy).toHaveBeenCalledTimes(1);
   spy.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('game over: buzzes and draws the run summary', async () => {
+  const haptics = require('react-native-haptic-feedback');
+  jest.useFakeTimers();
+  const { tree, tap, tapBtn, G, MENU_BTNS } = await mount();
+  const spy = jest.spyOn(G, 'resetRun');
+  await tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  spy.mockRestore();
+  haptics.trigger.mockClear();
+  // a zombie already behind the squad that costs every troop
+  g.zombies.push({
+    x: G.ROAD_MID, y: G.PLAYER_Y + 25, hp: 1, maxHp: 1, size: 13, speed: 0,
+    wob: 0, kind: 'walker', troopCost: 99, scoreVal: 1,
+  });
+  await tap(G.W / 2, 400); // advances a few frames; the overlay is drawn
+  expect(g.state).toBe('gameover');
+  expect(g.kills).toBe(0);
+  expect(haptics.trigger).toHaveBeenCalledTimes(1);
+  expect(haptics.trigger).toHaveBeenCalledWith('notificationError');
   await ReactTestRenderer.act(() => {
     jest.advanceTimersByTime(200);
     tree.unmount();

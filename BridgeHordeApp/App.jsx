@@ -13,6 +13,7 @@ import {
 } from "@shopify/react-native-skia";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AudioContext } from "react-native-audio-api";
+import { trigger as hapticTrigger } from "react-native-haptic-feedback";
 import * as G from "./game/core";
 import { createAudioEngine } from "./game/audio";
 import * as LB from "./leaderboard";
@@ -34,12 +35,20 @@ function initAudio() {
 
 // ---------- Settings (saved on the device) ----------
 const SETTINGS_KEY = "hordeSettings";
-const settings = { music: true, sfx: true, shake: true };
+const settings = { music: true, sfx: true, shake: true, haptics: true };
 function applySettings() {
   if (engine) {
     engine.setMusicOn(settings.music);
     engine.setSfxOn(settings.sfx);
   }
+}
+
+// ---------- Haptics ----------
+function haptic(type) {
+  if (!settings.haptics) return;
+  try {
+    hapticTrigger(type);
+  } catch {}
 }
 
 // ---------- Perspective projection (mirrors web/dev.html) ----------
@@ -451,6 +460,7 @@ export const SETTING_ROWS = [
   { key: "music", label: "Music" },
   { key: "sfx", label: "Sound effects" },
   { key: "shake", label: "Screen shake" },
+  { key: "haptics", label: "Vibration" },
 ].map((r, i) => ({ ...r, x: 36, y: 150 + i * 76, w: G.W - 72, h: 60 }));
 const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
 
@@ -531,17 +541,33 @@ function drawBoard(c, board) {
   center("TAP TO CLOSE", G.H - 34, fonts.cta, 24, "#f5c211");
 }
 
+const fmtTime = (sec) => {
+  const s = Math.floor(sec);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+};
+
 // Pause / game-over overlay. Tapping anywhere but the button resumes / retries.
 function drawOverlay(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
-  const paused = g.state === "paused";
-  centerText(c, paused ? "PAUSED" : "OVERRUN!", G.H / 2 - 60, fonts.title, 40, "#ffffff");
-  centerText(c, "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
-  if (!paused) {
-    if (g.newBest) centerText(c, "★ NEW BEST! ★", G.H / 2 + 32, fonts.cta, 24, "#ffd84d");
-    else centerText(c, "Best: " + g.best, G.H / 2 + 26, fonts.sub, 21, "#9fd4ff");
+  if (g.state === "paused") {
+    centerText(c, "PAUSED", G.H / 2 - 60, fonts.title, 40, "#ffffff");
+    centerText(c, "Score: " + g.score, G.H / 2 - 10, fonts.sub, 21, "#9fd4ff");
+    centerText(c, "TAP TO RESUME", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
+  } else {
+    centerText(c, "OVERRUN!", 236, fonts.title, 40, "#ffffff");
+    centerText(c, "Score: " + g.score, 280, fonts.cta, 24, "#ffffff");
+    // run summary: wave reached, time survived, kills
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(40, 302, G.W - 80, 70), 12, 12), fill("rgba(255,255,255,0.08)"));
+    const stats = [["WAVE", String(g.wave)], ["TIME", fmtTime(g.elapsed)], ["KILLS", String(g.kills)]];
+    stats.forEach(([label, value], i) => {
+      const cx = 100 + i * 100;
+      text(c, value, cx - textWidth(fonts.hud, value, 20) / 2, 334, fill("#ffffff"), fonts.hud);
+      text(c, label, cx - textWidth(fonts.small, label, 16) / 2, 358, fill("#9fd4ff"), fonts.small);
+    });
+    if (g.newBest) centerText(c, "★ NEW BEST! ★", 410, fonts.cta, 24, "#ffd84d");
+    else centerText(c, "Best: " + g.best, 406, fonts.sub, 21, "#9fd4ff");
+    centerText(c, "TAP TO RETRY", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
   }
-  centerText(c, paused ? "TAP TO RESUME" : "TAP TO RETRY", G.H / 2 + 90, fonts.cta, 24, "#f5c211");
   drawButton(c, HOME_BTN, "MAIN MENU");
 }
 
@@ -706,6 +732,9 @@ export default function App() {
       if (g.state === "playing") {
         G.update(g, dt, saveBest);
         if (engine) engine.playEvents(g);
+        if (g.state === "gameover") haptic(g.newBest ? "notificationSuccess" : "notificationError");
+        else if (g.events.bossSpawn) haptic("notificationWarning");
+        else if (g.events.troopLost) haptic("impactHeavy");
       }
       if (g.state === "gameover" && prevState === "playing") LB.recordRun(g.score, g.wave, g.elapsed);
       if (engine) {
@@ -738,6 +767,7 @@ export default function App() {
       if (row) {
         settings[row.key] = !settings[row.key];
         applySettings();
+        if (row.key === "haptics") haptic("impactMedium"); // feel it switch on
         AsyncStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)).catch(() => {});
         if (engine) engine.click();
       } else if (hit(BACK_BTN, wx, wy)) {
