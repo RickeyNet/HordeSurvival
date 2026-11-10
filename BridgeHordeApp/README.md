@@ -1,97 +1,84 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Horde Survival
 
-# Getting Started
+A mobile game where your squad holds a bridge against waves of zombies. The squad fires on its own; you drag left and right to aim it and to steer into gates that add troops, damage, fire rate, walls or a new weapon. Every third wave brings a boss. The run ends when the last soldier falls.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+Built with React Native and drawn with [React Native Skia](https://shopify.github.io/react-native-skia/). The project and package are named `BridgeHorde`; the name players see is "Horde Survival".
 
-## Step 1: Start Metro
+## Layout
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+| Path | What it is |
+| --- | --- |
+| `game/core.js` | All game rules, as plain JavaScript with no rendering or platform code. Tune gameplay here. |
+| `game/audio.js` | Music and sound effects, shared by the app and the browser page. |
+| `App.jsx` | The app: drawing, touch input, menus, settings, saved runs, haptics. |
+| `leaderboard.js` | Client for the global leaderboard. |
+| `web/dev.html` | The same game in a browser, for quick gameplay tuning. |
+| `__tests__/` | Jest tests for the game rules and the app screens. |
+| `../leaderboard/` | The leaderboard server (Cloudflare Worker + D1). |
+| `../docs/privacy.html` | Privacy policy page for the store listings. |
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+## Setup
 
-```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
-```
-
-## Step 2: Build and run your app
-
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+You need Node 22.11 or newer and the usual React Native tooling: see [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment).
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+npm install
 ```
 
-### iOS
+## Run
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+```sh
+npm start          # Metro, in one terminal
+npm run android    # or: npm run ios
+```
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+For iOS, install the pods first, and again whenever native dependencies change:
 
 ```sh
 bundle install
+cd ios && bundle exec pod install
 ```
 
-Then, and every time you update your native dependencies, run:
+Adding or updating a native library (for example `react-native-haptic-feedback`) needs a full native rebuild, not just a Metro reload.
+
+### In a browser
+
+`web/dev.html` runs the same `game/core.js` on a 2D canvas. It loads the game files as modules, so it has to be served over HTTP from this folder:
 
 ```sh
-bundle exec pod install
+npx serve .
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+Then open `/web/dev.html`. Drag or use the arrow keys / A and D to move, P or Escape to pause. It has no leaderboard and no haptics.
+
+## Test and lint
 
 ```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+npm test
+npm run lint
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+The app tests run the real Skia drawing code through CanvasKit, so they catch drawing errors as well as logic errors.
 
-This is one way to run your app - you can also build it directly from Android Studio or Xcode.
+## Leaderboard
 
-## Step 3: Modify your app
+The leaderboard is off until `LEADERBOARD_URL` in `leaderboard.js` is set. To turn it on, deploy the Worker and paste in the URL it prints:
 
-Now that you have successfully run the app, let's make changes!
+```sh
+cd ../leaderboard
+npm install
+npm run deploy
+```
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes - this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+Players are anonymous. The app makes up a random id on first launch and the server derives a display name from it.
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+## Release builds
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+- **Android:** `npm run build:apk` (Windows) builds an arm64 release APK and copies it to `dist/HordeSurvival-<version>.apk` at the repo root. On other systems run `./gradlew assembleRelease` in `android/`. Without `android/keystore.properties` and a release keystore the build is signed with the debug keystore.
+- **iOS:** after `pod install`, open `ios/BridgeHorde.xcworkspace` in Xcode, set a development team, and archive.
 
-## Congratulations! :tada:
+The version lives in three places that should be kept in step: `package.json`, `versionName` in `android/app/build.gradle`, and `MARKETING_VERSION` in the Xcode project.
 
-You've successfully run and modified your React Native App. :partying_face:
+## Data kept on the device
 
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Best score, settings, an unfinished run, the anonymous player id and a score waiting to be sent are stored with AsyncStorage. Nothing else is collected.

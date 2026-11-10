@@ -11,6 +11,7 @@ const WAVE_LEN = 18; // must match game/core.js
 const ID_RE = /^[0-9a-f]{32}$/;
 const COOLDOWN_MS = 5000;
 const MAX_LIMIT = 100;
+const MAX_BODY = 512; // bytes; a real submission is about 100
 
 // ---------- Anonymous names ----------
 const ADJECTIVES = [
@@ -63,9 +64,13 @@ async function rankOf(db, best) {
 
 // ---------- Handlers ----------
 async function submit(request, env) {
+  // Read at most MAX_BODY bytes, whatever content-length claims.
+  if (Number(request.headers.get("content-length")) > MAX_BODY) return json({ error: "too large" }, 413);
   let body;
   try {
-    body = await request.json();
+    const raw = await request.text();
+    if (raw.length > MAX_BODY) return json({ error: "too large" }, 413);
+    body = JSON.parse(raw);
   } catch {
     return json({ error: "bad json" }, 400);
   }
@@ -77,18 +82,19 @@ async function submit(request, env) {
   const existing = await env.DB.prepare("SELECT best, last_submit FROM players WHERE id = ?").bind(playerId).first();
   if (existing && now - existing.last_submit < COOLDOWN_MS) return json({ error: "too many requests" }, 429);
 
+  // One statement, so two submissions racing each other can neither fail on
+  // the insert nor leave the lower score as the best.
   const name = nameFor(playerId);
-  if (!existing) {
-    await env.DB.prepare(
-      "INSERT INTO players (id, name, best, wave, updated_at, last_submit) VALUES (?, ?, ?, ?, ?, ?)"
-    ).bind(playerId, name, score, wave, now, now).run();
-  } else if (score > existing.best) {
-    await env.DB.prepare("UPDATE players SET best = ?, wave = ?, updated_at = ?, last_submit = ? WHERE id = ?")
-      .bind(score, wave, now, now, playerId).run();
-  } else {
-    await env.DB.prepare("UPDATE players SET last_submit = ? WHERE id = ?").bind(now, playerId).run();
-  }
-  const best = Math.max(score, existing ? existing.best : 0);
+  const row = await env.DB.prepare(
+    `INSERT INTO players (id, name, best, wave, updated_at, last_submit) VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+     ON CONFLICT (id) DO UPDATE SET
+       wave = CASE WHEN excluded.best > best THEN excluded.wave ELSE wave END,
+       updated_at = CASE WHEN excluded.best > best THEN excluded.updated_at ELSE updated_at END,
+       best = MAX(best, excluded.best),
+       last_submit = excluded.last_submit
+     RETURNING best`
+  ).bind(playerId, name, score, wave, now).first();
+  const best = row.best;
   return json({ name, best, rank: await rankOf(env.DB, best) });
 }
 

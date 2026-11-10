@@ -1,7 +1,7 @@
 // Bridge Horde - shared game logic.
 // This file is pure JavaScript with no rendering or platform code, so the
 // exact same logic runs in the browser dev page (web/dev.html) and in the
-// React Native app (App.tsx). Tune gameplay here.
+// React Native app (App.jsx). Tune gameplay here.
 
 // ---------- World constants ----------
 export const W = 400;

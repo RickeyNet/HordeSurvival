@@ -7,11 +7,11 @@
 - [ ] Check the main menu, resume flow, new-run confirmation, first-run hints, settings screen, game-over summary and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
 
 ## Cleanup
-- [ ] Align version numbers (`package.json` 0.0.1, Android 1.1, iOS 1.0)
+- [x] Align version numbers (all 1.1; build numbers stay per platform: Android `versionCode` 2, iOS 1)
 - [ ] Settle the name: package/project are "BridgeHorde", display name is "Horde Survival"
-- [ ] Move off the deprecated `Skia.Path` calls (`moveTo`, `lineTo`, `quadTo`, `addArc`, `close`) to `Skia.PathBuilder`
-- [ ] Bring `web/dev.html` up to date (no leaderboard, no main menu or settings)
-- [ ] Replace the boilerplate React Native README
+- [x] Move off the deprecated `Skia.Path` calls (`moveTo`, `lineTo`, `quadTo`, `addArc`, `close`) to `Skia.PathBuilder`
+- [x] Bring `web/dev.html` up to date (main menu, resume, settings, hints, game-over summary; the leaderboard stays app-only)
+- [x] Replace the boilerplate React Native README
 
 ## Feel
 - [x] Haptics on troop lost, boss spawn and game over, with a toggle in settings
@@ -31,6 +31,11 @@
 - [ ] Difficulty tuning from playtests (track wave reached)
 
 ## Technical
-- [ ] Unit tests for `game/core.js` (wave scaling, gates, walls)
-- [ ] Review leaderboard anti-cheat in `leaderboard/src/index.js`
+- [x] Unit tests for `game/core.js` (wave scaling, gates, walls)
+- [x] Review leaderboard anti-cheat in `leaderboard/src/index.js` (request size cap and race-free score write added; follow-ups below)
+- [ ] Leaderboard: limit submissions per IP address (Cloudflare rate limiting); today anyone can invent unlimited player ids and fill the board
+- [ ] Leaderboard: lower the 24-hour cap on run length in `plausible()`; it currently lets a forged score of about 2 million through
+- [ ] Leaderboard: a way to remove a forged score and keep that player id from coming back
+- [ ] Leaderboard: the `COUNT(*)` queries read one row per player on every view; cache the board or keep a counter before the player count grows
+- [ ] Tests for the leaderboard Worker (`plausible`, submit, ranking)
 - [ ] Crash reporting

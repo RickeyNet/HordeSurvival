@@ -134,11 +134,11 @@ function ellipse(c, cx, cy, rx, ry, paint) {
   c.drawOval(Skia.XYWHRect(cx - rx, cy - ry, rx * 2, ry * 2), paint);
 }
 function poly(c, pts, paint) {
-  const p = Skia.Path.Make();
+  const p = Skia.PathBuilder.Make();
   p.moveTo(pts[0][0], pts[0][1]);
   for (let i = 1; i < pts.length; i++) p.lineTo(pts[i][0], pts[i][1]);
   p.close();
-  c.drawPath(p, paint);
+  c.drawPath(p.detach(), paint);
 }
 // matchFont can return null when no typeface is available (e.g. headless
 // tests), so every text draw goes through here and skips quietly.
@@ -262,11 +262,11 @@ function drawBridge(c) {
       line(c, e.x, e.y, e.x, e.y - 26 * e.s, stroke("#2b303a", 2.5));
     }
     const n2 = roadEdge(0, side), f2 = roadEdge(1, side);
-    const railPath = Skia.Path.Make();
+    const railPath = Skia.PathBuilder.Make();
     railPath.moveTo(nx, G.H - 40);
     railPath.lineTo(n2.x, n2.y - 26);
     railPath.lineTo(f2.x, f2.y - 26 * f2.s);
-    c.drawPath(railPath, stroke("#3a404d", 3));
+    c.drawPath(railPath.detach(), stroke("#3a404d", 3));
   }
 
   const tf = 0.72;
@@ -277,16 +277,16 @@ function drawBridge(c) {
     rect(c, e.x - 8 * e.s, e.y - th, 16 * e.s, 6 * e.s, fill("#232838"));
   }
   const lt = roadEdge(tf, "l"), rt = roadEdge(tf, "r");
-  const cableL = Skia.Path.Make();
+  const cableL = Skia.PathBuilder.Make();
   cableL.moveTo(-24, 30);
   cableL.quadTo(lt.x - 40, lt.y - 20, lt.x, lt.y - 170 * lt.s);
   cableL.quadTo(lt.x + 40, HORIZON - 12, G.W / 2 - 14, HORIZON);
-  c.drawPath(cableL, stroke("#2c3244", 3.5));
-  const cableR = Skia.Path.Make();
+  c.drawPath(cableL.detach(), stroke("#2c3244", 3.5));
+  const cableR = Skia.PathBuilder.Make();
   cableR.moveTo(G.W + 24, 30);
   cableR.quadTo(rt.x + 40, rt.y - 20, rt.x, rt.y - 170 * rt.s);
   cableR.quadTo(rt.x - 40, HORIZON - 12, G.W / 2 + 14, HORIZON);
-  c.drawPath(cableR, stroke("#2c3244", 3.5));
+  c.drawPath(cableR.detach(), stroke("#2c3244", 3.5));
   for (let i = 1; i < 7; i++) {
     const d = tf * (i / 7) * 0.9;
     for (const side of ["l", "r"]) {
@@ -380,10 +380,10 @@ function drawSoldier(c, x, y, firing) {
     }
   }
 
-  const helmet = Skia.Path.Make();
+  const helmet = Skia.PathBuilder.Make();
   helmet.addArc(Skia.XYWHRect(p.x - 6.5 * k, p.y - 44.5 * k, 13 * k, 13 * k), 180, 180);
   helmet.close();
-  c.drawPath(helmet, fill("#39452e"));
+  c.drawPath(helmet.detach(), fill("#39452e"));
   rect(c, p.x - 6.5 * k, p.y - 38 * k, 13 * k, 3 * k, fill("#39452e"));
   rect(c, p.x - 4 * k, p.y - 35.5 * k, 8 * k, 2.5 * k, fill("#c9a06c"));
 }

@@ -9,12 +9,12 @@
   html, body { height: 100%; background: #0b0e14; overflow: hidden; touch-action: none; user-select: none; }
   #wrap { height: 100%; display: flex; align-items: center; justify-content: center; }
   canvas { display: block; }
-  #note { position: fixed; top: 6px; left: 8px; color: #445; font: 11px monospace; }
+  #note { position: fixed; top: 6px; left: 8px; color: #445; font: 11px monospace; pointer-events: none; }
 </style>
 </head>
 <body>
 <div id="wrap"><canvas id="game"></canvas></div>
-<div id="note">dev harness - logic from game/core.js</div>
+<div id="note">dev page - logic from game/core.js</div>
 <script type="module">
 import * as G from "../game/core.js";
 import { createAudioEngine } from "../game/audio.js";
@@ -63,10 +63,51 @@ const fogAlpha = (y) => {
   return Math.min(1, 0.18 + (1 - Math.min(d, 1)) * 2.2);
 };
 
+// ---------- Saved state (localStorage; the app uses AsyncStorage) ----------
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+const RUN_KEY = "hordeRun";
+const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
+const SETTINGS_KEY = "hordeSettings";
+const settings = { music: true, sfx: true, shake: true };
+try {
+  const saved = JSON.parse(store.get(SETTINGS_KEY) || "{}");
+  for (const k of Object.keys(settings)) if (typeof saved[k] === "boolean") settings[k] = saved[k];
+} catch {}
+function applySettings() {
+  if (engine) {
+    engine.setMusicOn(settings.music);
+    engine.setSfxOn(settings.sfx);
+  }
+}
+
 // ---------- Game instance ----------
 const game = G.newGame();
-game.best = Number(localStorage.getItem("bridgeHordeBest") || 0);
-const saveBest = (b) => localStorage.setItem("bridgeHordeBest", String(b));
+game.best = Number(store.get("bridgeHordeBest") || 0);
+const saveBest = (b) => store.set("bridgeHordeBest", String(b));
+// bring back a run that was left unfinished
+const savedRun = store.get(RUN_KEY);
+if (savedRun) G.loadRun(game, savedRun);
+
+// ---------- Screens (mirrors App.jsx) ----------
+const ui = { board: false, settings: false, confirmNew: false };
+const tutorial = { on: store.get(TUTORIAL_KEY) !== "1", moved: 0 };
+const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
+const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: btn(460, 54) };
+const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
+const HOME_BTN = btn(G.H / 2 + 122, 46);
+const BACK_BTN = btn(G.H - 120, 50);
+const SETTING_ROWS = [
+  { key: "music", label: "Music" },
+  { key: "sfx", label: "Sound effects" },
+  { key: "shake", label: "Screen shake" },
+].map((r, i) => ({ ...r, x: 36, y: 150 + i * 76, w: G.W - 72, h: 60 }));
+const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
+const click = () => { if (engine) engine.click(); };
 
 // ---------- Input ----------
 let dragging = false, lastPointerX = 0;
@@ -76,25 +117,85 @@ const toWorldY = (clientY) => (clientY - canvas.getBoundingClientRect().top) / v
 canvas.addEventListener("pointerdown", (e) => {
   initAudio();
   const wx = toWorldX(e.clientX), wy = toWorldY(e.clientY);
-  if (game.state === "playing" && G.inPauseBtn(wx, wy)) { G.togglePause(game); if (engine) engine.click(); return; }
-  if (game.state === "paused") { G.togglePause(game); if (engine) engine.click(); return; }
-  if (game.state !== "playing") { G.resetRun(game); return; }
-  dragging = true;
-  lastPointerX = wx;
+  if (ui.board) { ui.board = false; click(); return; }
+  if (ui.settings) {
+    const row = SETTING_ROWS.find((r) => hit(r, wx, wy));
+    if (row) {
+      settings[row.key] = !settings[row.key];
+      applySettings();
+      store.set(SETTINGS_KEY, JSON.stringify(settings));
+      click();
+    } else if (hit(BACK_BTN, wx, wy)) {
+      ui.settings = false;
+      click();
+    }
+    return;
+  }
+  if (game.state === "menu") {
+    if (ui.confirmNew && game.inRun) {
+      // anything but "start new run" keeps the waiting run
+      ui.confirmNew = false;
+      if (hit(CONFIRM_BTNS.yes, wx, wy)) G.resetRun(game);
+      else click();
+      return;
+    }
+    const btns = game.inRun ? RUN_MENU_BTNS : MENU_BTNS;
+    if (game.inRun && hit(btns.resume, wx, wy)) { G.resumeRun(game); click(); }
+    else if (hit(btns.fight, wx, wy)) {
+      if (game.inRun) { ui.confirmNew = true; click(); }
+      else G.resetRun(game);
+    }
+    else if (hit(btns.board, wx, wy)) { ui.board = true; click(); }
+    else if (hit(btns.settings, wx, wy)) { ui.settings = true; click(); }
+    return;
+  }
+  if (game.state === "playing") {
+    if (G.inPauseBtn(wx, wy)) { G.togglePause(game); click(); return; }
+    dragging = true;
+    lastPointerX = wx;
+    return;
+  }
+  // paused or game over
+  if (hit(HOME_BTN, wx, wy)) { G.toMenu(game); click(); }
+  else if (game.state === "paused") { G.togglePause(game); click(); }
+  else G.resetRun(game);
 });
 canvas.addEventListener("pointermove", (e) => {
   if (!dragging || game.state !== "playing") return;
   const x = toWorldX(e.clientX);
   game.player.x += (x - lastPointerX) * 1.4;
+  tutorial.moved += Math.abs(x - lastPointerX);
   lastPointerX = x;
 });
 window.addEventListener("pointerup", () => (dragging = false));
+// Escape works like the Android back button: close a screen, pause a run, or
+// leave a paused / finished run for the menu.
+function goBack() {
+  if (ui.board) ui.board = false;
+  else if (ui.settings) ui.settings = false;
+  else if (ui.confirmNew) ui.confirmNew = false;
+  else if (game.state === "playing") G.togglePause(game);
+  else if (game.state !== "menu") G.toMenu(game);
+}
 window.addEventListener("keydown", (e) => {
   keys[e.key] = true;
-  if (e.key === "p" || e.key === "Escape") { G.togglePause(game); return; }
-  if (game.state !== "playing" && game.state !== "paused" && (e.key === " " || e.key === "Enter")) { initAudio(); G.resetRun(game); }
+  if (e.key === "Escape") { goBack(); return; }
+  if (e.key === "p") { G.togglePause(game); return; }
+  if (e.key !== " " && e.key !== "Enter") return;
+  if (ui.board || ui.settings || ui.confirmNew) return;
+  initAudio();
+  if (game.state === "paused") G.togglePause(game);
+  else if (game.state === "menu" && game.inRun) G.resumeRun(game);
+  else if (game.state !== "playing") G.resetRun(game);
 });
 window.addEventListener("keyup", (e) => (keys[e.key] = false));
+// keep an unfinished run when the tab is hidden or closed
+function stash() {
+  if (game.state === "playing") G.togglePause(game);
+  if (G.hasRun(game)) store.set(RUN_KEY, G.saveRun(game));
+}
+document.addEventListener("visibilitychange", () => { if (document.hidden) stash(); });
+window.addEventListener("pagehide", stash);
 
 // ---------- Sound (shared engine: music + all SFX) ----------
 let audio = null, engine = null;
@@ -105,6 +206,7 @@ function initAudio() {
       engine = createAudioEngine(audio);
       engine.startMusic();
       engine.setMood("menu");
+      applySettings();
     } catch (e) {}
   }
   if (audio && audio.state === "suspended") audio.resume();
@@ -377,7 +479,6 @@ function drawSoldier(x, y, firing) {
 
   // muzzle flash
   if (firing) {
-    ctx.fillStyle = "#ffe27a";
     ctx.beginPath();
     const fx = p.x + 7.5 * k, fy = p.y - 49 * k;
     for (let i = 0; i < 5; i++) {
@@ -385,7 +486,6 @@ function drawSoldier(x, y, firing) {
       ctx.moveTo(fx, fy);
       ctx.lineTo(fx + Math.cos(a) * 7 * k, fy + Math.sin(a) * 7 * k);
     }
-    ctx.stroke();
     ctx.strokeStyle = "#ffe27a";
     ctx.lineWidth = 2 * k;
     ctx.stroke();
@@ -446,7 +546,7 @@ function drawBullet(b) {
 }
 
 
-// ---------- HUD / overlays ----------
+// ---------- Walls / HUD ----------
 function drawWall(w) {
   const a = proj(G.ROAD_L + 6, w.y), b = proj(G.ROAD_R - 6, w.y);
   const s = proj(G.ROAD_MID, w.y).s * ACTOR_SCALE;
@@ -496,30 +596,140 @@ function drawHUD() {
     G.W / 2, G.H - 14
   );
 }
-function drawOverlay() {
-  ctx.fillStyle = "rgba(0,0,0,0.6)";
+// ---------- Menus and overlays (mirrors App.jsx) ----------
+const FONT = "px system-ui, sans-serif";
+function label(str, x, y, font, color, align = "center") {
+  ctx.font = font + FONT;
+  ctx.fillStyle = color;
+  ctx.textAlign = align;
+  ctx.fillText(str, x, y);
+}
+const centerText = (str, y, font, color) => label(str, G.W / 2, y, font, color);
+function panel(x, y, w, h, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.roundRect(x, y, w, h, r); ctx.fill();
+}
+function dim(color) {
+  ctx.fillStyle = color;
   ctx.fillRect(0, 0, G.W, G.H);
-  const menu = game.state === "menu", paused = game.state === "paused";
-  ctx.fillStyle = "#fff"; ctx.textAlign = "center"; ctx.font = "bold 40px system-ui, sans-serif";
-  ctx.fillText(paused ? "PAUSED" : menu ? "HORDE SURVIVAL" : "OVERRUN!", G.W / 2, G.H / 2 - 60);
-  ctx.font = "20px system-ui, sans-serif"; ctx.fillStyle = "#9fd4ff";
-  ctx.fillText(paused ? "Score: " + game.score : menu ? "Drag to move - you fire automatically" : "Score: " + game.score, G.W / 2, G.H / 2 - 10);
-  if (!paused) {
-    if (!menu && game.newBest) {
-      ctx.fillStyle = "#ffd84d"; ctx.font = "bold 26px system-ui, sans-serif";
-      ctx.fillText("★ NEW BEST! ★", G.W / 2, G.H / 2 + 32);
-    } else {
-      ctx.fillText(menu ? "Steer into gates - avoid the red ones!" : "Best: " + game.best, G.W / 2, G.H / 2 + 26);
-    }
+}
+function drawButton(b, str, primary) {
+  if (primary) {
+    panel(b.x, b.y, b.w, b.h, 12, "#f5c211");
+    centerText(str, b.y + b.h / 2 + 9, "bold 24", "#1a1405");
+  } else {
+    panel(b.x, b.y, b.w, b.h, 12, "rgba(255,255,255,0.12)");
+    ctx.strokeStyle = "#9fd4ff";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12); ctx.stroke();
+    centerText(str, b.y + b.h / 2 + 7, "bold 20", "#9fd4ff");
   }
-  ctx.fillStyle = "#f5c211"; ctx.font = "bold 22px system-ui, sans-serif";
-  ctx.fillText(paused ? "TAP TO RESUME" : "TAP TO " + (menu ? "START" : "RETRY"), G.W / 2, G.H / 2 + 90);
+}
+
+function drawMenu() {
+  dim("rgba(0,0,0,0.6)");
+  centerText("HORDE SURVIVAL", 208, "bold 40", "#fff");
+  if (game.inRun) {
+    centerText("Wave " + game.wave + "  -  Score " + game.score, 252, "21", "#9fd4ff");
+    drawButton(RUN_MENU_BTNS.resume, "RESUME", true);
+    drawButton(RUN_MENU_BTNS.fight, "NEW RUN");
+    drawButton(RUN_MENU_BTNS.board, "LEADERBOARDS");
+    drawButton(RUN_MENU_BTNS.settings, "SETTINGS");
+    return;
+  }
+  centerText(game.best > 0 ? "Best: " + game.best : "Hold the bridge.", 252, "21", "#9fd4ff");
+  drawButton(MENU_BTNS.fight, "FIGHT HORDE", true);
+  drawButton(MENU_BTNS.board, "LEADERBOARDS");
+  drawButton(MENU_BTNS.settings, "SETTINGS");
+  centerText("Drag to move - you fire automatically", 588, "16", "#c8d3e0");
+  centerText("Steer into gates - avoid the red ones!", 612, "16", "#c8d3e0");
+}
+
+function drawConfirmNew() {
+  dim("rgba(5,8,14,0.92)");
+  centerText("NEW RUN?", 236, "bold 40", "#fff");
+  centerText("Your current run will be lost.", 284, "21", "#9fd4ff");
+  centerText("Wave " + game.wave + "  -  Score " + game.score, 316, "16", "#c8d3e0");
+  drawButton(CONFIRM_BTNS.cancel, "KEEP MY RUN", true);
+  drawButton(CONFIRM_BTNS.yes, "START NEW RUN");
+}
+
+function drawSettings() {
+  dim("rgba(5,8,14,0.92)");
+  centerText("SETTINGS", 84, "bold 40", "#fff");
+  for (const r of SETTING_ROWS) {
+    const on = settings[r.key];
+    panel(r.x, r.y, r.w, r.h, 12, "rgba(255,255,255,0.08)");
+    label(r.label, r.x + 18, r.y + r.h / 2 + 7, "bold 20", "#fff", "left");
+    // toggle switch
+    const sw = 58, sh = 30, sx = r.x + r.w - sw - 16, sy = r.y + (r.h - sh) / 2;
+    panel(sx, sy, sw, sh, sh / 2, on ? "#3fbf6a" : "#4a5160");
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(on ? sx + sw - sh / 2 : sx + sh / 2, sy + sh / 2, sh / 2 - 4, 0, Math.PI * 2); ctx.fill();
+    label(on ? "ON" : "OFF", sx - 12, r.y + r.h / 2 + 6, "16", on ? "#8fe3a8" : "#8b93a3", "right");
+  }
+  drawButton(BACK_BTN, "BACK");
+}
+
+// The leaderboard client lives in the app (leaderboard.js); this page only
+// keeps the button so the menu matches.
+function drawBoard() {
+  dim("rgba(5,8,14,0.92)");
+  centerText("LEADERBOARD", 84, "bold 40", "#fff");
+  centerText("Only available in the app.", G.H / 2, "21", "#9fd4ff");
+  centerText("TAP TO CLOSE", G.H - 34, "bold 24", "#f5c211");
+}
+
+// First-run hints: shown during wave 1 until the player has moved and taken a gate.
+function tutorialHint() {
+  if (!tutorial.on || game.state !== "playing" || game.wave > 1) return null;
+  if (tutorial.moved < 40) return { title: "DRAG LEFT / RIGHT TO MOVE", sub: "Your squad fires on its own" };
+  if (game.gates.some((gate) => !gate.used && gate.y > 0)) return { title: "STEER INTO A GATE", sub: "Pick a side - avoid the red ones!" };
+  return null;
+}
+function drawHint(h) {
+  ctx.font = "bold 20" + FONT;
+  const tw = ctx.measureText(h.title).width;
+  ctx.font = "16" + FONT;
+  const w = Math.max(tw, ctx.measureText(h.sub).width) + 36;
+  panel(G.W / 2 - w / 2, 64, w, 64, 12, "rgba(5,8,14,0.78)");
+  centerText(h.title, 91, "bold 20", "#f5c211");
+  centerText(h.sub, 115, "16", "#fff");
+}
+
+const fmtTime = (sec) => {
+  const s = Math.floor(sec);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+};
+
+// Pause / game-over overlay. Tapping anywhere but the button resumes / retries.
+function drawOverlay() {
+  dim("rgba(0,0,0,0.6)");
+  if (game.state === "paused") {
+    centerText("PAUSED", G.H / 2 - 60, "bold 40", "#fff");
+    centerText("Score: " + game.score, G.H / 2 - 10, "21", "#9fd4ff");
+    centerText("TAP TO RESUME", G.H / 2 + 90, "bold 24", "#f5c211");
+  } else {
+    centerText("OVERRUN!", 236, "bold 40", "#fff");
+    centerText("Score: " + game.score, 280, "bold 24", "#fff");
+    // run summary: wave reached, time survived, kills
+    panel(40, 302, G.W - 80, 70, 12, "rgba(255,255,255,0.08)");
+    const stats = [["WAVE", String(game.wave)], ["TIME", fmtTime(game.elapsed)], ["KILLS", String(game.kills)]];
+    stats.forEach(([name, value], i) => {
+      label(value, 100 + i * 100, 334, "bold 20", "#fff");
+      label(name, 100 + i * 100, 358, "16", "#9fd4ff");
+    });
+    if (game.newBest) centerText("★ NEW BEST! ★", 410, "bold 24", "#ffd84d");
+    else centerText("Best: " + game.best, 406, "21", "#9fd4ff");
+    centerText("TAP TO RETRY", G.H / 2 + 90, "bold 24", "#f5c211");
+  }
+  drawButton(HOME_BTN, "MAIN MENU");
 }
 
 // ---------- Frame ----------
 function draw() {
   ctx.save();
-  if (game.shake > 0) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
+  if (game.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
 
   drawSky();
   drawWaterAndCity();
@@ -574,13 +784,20 @@ function draw() {
   }
 
   drawHUD();
+  const hint = tutorialHint();
+  if (hint) drawHint(hint);
   ctx.restore();
-  if (game.state !== "playing") drawOverlay();
+  if (ui.board) drawBoard();
+  else if (ui.settings) drawSettings();
+  else if (ui.confirmNew && game.inRun) drawConfirmNew();
+  else if (game.state === "menu") drawMenu();
+  else if (game.state !== "playing") drawOverlay();
 }
 
 // ---------- Main loop ----------
 let last = performance.now();
 let prevState = game.state;
+let runStored = null; // unknown until the first frame settles it
 function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
@@ -589,11 +806,24 @@ function loop(now) {
     if (keys.ArrowRight || keys.d) game.player.x += 280 * dt;
     G.update(game, dt, saveBest);
     if (engine) engine.playEvents(game);
+    // the hints are done once a gate is taken (or wave 1 is over)
+    if (tutorial.on && (game.events.gate || game.wave > 1)) {
+      tutorial.on = false;
+      store.set(TUTORIAL_KEY, "1");
+    }
   }
   if (engine) {
     const bossAlive = game.zombies.some((z) => z.boss);
     engine.setMood(game.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
     if (game.state === "gameover" && prevState === "playing") engine.gameOverJingle(game.newBest);
+  }
+  // Keep a resumable run stored while it is paused or behind the menu, and
+  // drop it the moment play continues or the run ends.
+  const keep = G.hasRun(game);
+  if (keep !== runStored && (keep || game.state !== "menu")) {
+    runStored = keep;
+    if (keep) store.set(RUN_KEY, G.saveRun(game));
+    else store.del(RUN_KEY);
   }
   prevState = game.state;
   draw();
