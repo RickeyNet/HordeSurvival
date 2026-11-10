@@ -70,6 +70,7 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch {} },
 };
 const RUN_KEY = "hordeRun";
+const META_KEY = "hordeMeta"; // coins and upgrades (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 const SETTINGS_KEY = "hordeSettings";
 const settings = { music: true, sfx: true, shake: true };
@@ -88,16 +89,19 @@ function applySettings() {
 const game = G.newGame();
 game.best = Number(store.get("bridgeHordeBest") || 0);
 const saveBest = (b) => store.set("bridgeHordeBest", String(b));
+const savedMeta = store.get(META_KEY);
+if (savedMeta) G.loadMeta(game, savedMeta);
+const storeMeta = () => store.set(META_KEY, G.saveMeta(game));
 // bring back a run that was left unfinished
 const savedRun = store.get(RUN_KEY);
 if (savedRun) G.loadRun(game, savedRun);
 
 // ---------- Screens (mirrors App.jsx) ----------
-const ui = { board: false, settings: false, confirmNew: false };
+const ui = { board: false, settings: false, shop: false, confirmNew: false };
 const tutorial = { on: store.get(TUTORIAL_KEY) !== "1", moved: 0 };
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
-const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: btn(460, 54) };
-const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+const MENU_BTNS = { fight: btn(310, 64), shop: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), shop: btn(460, 54), board: btn(528, 54), settings: btn(596, 54) };
 const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
 const HOME_BTN = btn(G.H / 2 + 122, 46);
 const BACK_BTN = btn(G.H - 120, 50);
@@ -106,6 +110,8 @@ const SETTING_ROWS = [
   { key: "sfx", label: "Sound effects" },
   { key: "shake", label: "Screen shake" },
 ].map((r, i) => ({ ...r, x: 36, y: 150 + i * 76, w: G.W - 72, h: 60 }));
+// Upgrade shop: one row per entry in G.UPGRADES; clicking a row buys a level.
+const UPGRADE_ROWS = Object.keys(G.UPGRADES).map((key, i) => ({ key, x: 24, y: 160 + i * 112, w: G.W - 48, h: 96 }));
 const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
 const click = () => { if (engine) engine.click(); };
 
@@ -131,6 +137,18 @@ canvas.addEventListener("pointerdown", (e) => {
     }
     return;
   }
+  if (ui.shop) {
+    const row = UPGRADE_ROWS.find((r) => hit(r, wx, wy));
+    if (row) {
+      if (!G.buyUpgrade(game, row.key)) return; // top level, or not enough coins
+      storeMeta();
+      click();
+    } else if (hit(BACK_BTN, wx, wy)) {
+      ui.shop = false;
+      click();
+    }
+    return;
+  }
   if (game.state === "menu") {
     if (ui.confirmNew && game.inRun) {
       // anything but "start new run" keeps the waiting run
@@ -145,6 +163,7 @@ canvas.addEventListener("pointerdown", (e) => {
       if (game.inRun) { ui.confirmNew = true; click(); }
       else G.resetRun(game);
     }
+    else if (hit(btns.shop, wx, wy)) { ui.shop = true; click(); }
     else if (hit(btns.board, wx, wy)) { ui.board = true; click(); }
     else if (hit(btns.settings, wx, wy)) { ui.settings = true; click(); }
     return;
@@ -173,6 +192,7 @@ window.addEventListener("pointerup", () => (dragging = false));
 function goBack() {
   if (ui.board) ui.board = false;
   else if (ui.settings) ui.settings = false;
+  else if (ui.shop) ui.shop = false;
   else if (ui.confirmNew) ui.confirmNew = false;
   else if (game.state === "playing") G.togglePause(game);
   else if (game.state !== "menu") G.toMenu(game);
@@ -182,7 +202,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { goBack(); return; }
   if (e.key === "p") { G.togglePause(game); return; }
   if (e.key !== " " && e.key !== "Enter") return;
-  if (ui.board || ui.settings || ui.confirmNew) return;
+  if (ui.board || ui.settings || ui.shop || ui.confirmNew) return;
   initAudio();
   if (game.state === "paused") G.togglePause(game);
   else if (game.state === "menu" && game.inRun) G.resumeRun(game);
@@ -626,23 +646,71 @@ function drawButton(b, str, primary) {
   }
 }
 
+// A coin and an amount, centered on cx.
+function drawCoins(cx, y, amount, font, size, color) {
+  const str = String(amount);
+  const r = size * 0.4;
+  ctx.font = font + FONT;
+  const x = cx - (r * 2 + 6 + ctx.measureText(str).width) / 2;
+  ctx.fillStyle = "#f5c211";
+  ctx.strokeStyle = "#a87b00";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x + r, y - size * 0.34, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  label(str, x + r * 2 + 6, y, font, color, "left");
+}
+
 function drawMenu() {
   dim("rgba(0,0,0,0.6)");
   centerText("HORDE SURVIVAL", 208, "bold 40", "#fff");
+  drawCoins(G.W / 2, 286, game.coins, "21", 21, "#f5c211");
   if (game.inRun) {
     centerText("Wave " + game.wave + "  -  Score " + game.score, 252, "21", "#9fd4ff");
     drawButton(RUN_MENU_BTNS.resume, "RESUME", true);
     drawButton(RUN_MENU_BTNS.fight, "NEW RUN");
+    drawButton(RUN_MENU_BTNS.shop, "UPGRADES");
     drawButton(RUN_MENU_BTNS.board, "LEADERBOARDS");
     drawButton(RUN_MENU_BTNS.settings, "SETTINGS");
     return;
   }
   centerText(game.best > 0 ? "Best: " + game.best : "Hold the bridge.", 252, "21", "#9fd4ff");
   drawButton(MENU_BTNS.fight, "FIGHT HORDE", true);
+  drawButton(MENU_BTNS.shop, "UPGRADES");
   drawButton(MENU_BTNS.board, "LEADERBOARDS");
   drawButton(MENU_BTNS.settings, "SETTINGS");
-  centerText("Drag to move - you fire automatically", 588, "16", "#c8d3e0");
-  centerText("Steer into gates - avoid the red ones!", 612, "16", "#c8d3e0");
+  centerText("Drag to move - you fire automatically", 618, "16", "#c8d3e0");
+  centerText("Steer into gates - avoid the red ones!", 642, "16", "#c8d3e0");
+}
+
+function drawShop() {
+  dim("rgba(5,8,14,0.92)");
+  centerText("UPGRADES", 84, "bold 40", "#fff");
+  drawCoins(G.W / 2, 128, game.coins, "bold 24", 24, "#f5c211");
+  for (const r of UPGRADE_ROWS) {
+    const u = G.UPGRADES[r.key];
+    const level = game.upgrades[r.key], top = u.costs.length;
+    const cost = G.upgradeCost(game, r.key);
+    panel(r.x, r.y, r.w, r.h, 12, "rgba(255,255,255,0.08)");
+    label(u.label, r.x + 16, r.y + 30, "bold 20", "#fff", "left");
+    label(u.desc, r.x + 16, r.y + 53, "16", "#c8d3e0", "left");
+    // one pip per level, then what the level gives now and next
+    for (let i = 0; i < top; i++) panel(r.x + 16 + i * 20, r.y + 68, 15, 10, 3, i < level ? "#f5c211" : "rgba(255,255,255,0.18)");
+    const value = u.value(level) + (cost === null ? "" : "  >  " + u.value(level + 1));
+    label(value, r.x + 24 + top * 20, r.y + 79, "16", "#9fd4ff", "left");
+    // price
+    const bx = r.x + r.w - 96, by = r.y + 22, bw = 82, bh = 52;
+    if (cost === null) {
+      label("MAX", bx + bw / 2, by + bh / 2 + 7, "bold 20", "#8fe3a8");
+    } else if (game.coins >= cost) {
+      panel(bx, by, bw, bh, 10, "#f5c211");
+      drawCoins(bx + bw / 2, by + bh / 2 + 7, cost, "bold 20", 20, "#1a1405");
+    } else {
+      panel(bx, by, bw, bh, 10, "rgba(255,255,255,0.08)");
+      drawCoins(bx + bw / 2, by + bh / 2 + 7, cost, "bold 20", 20, "#8b93a3");
+    }
+  }
+  centerText("Every run pays coins when it ends.", 524, "16", "#c8d3e0");
+  centerText("Starting upgrades count from the next run.", 548, "16", "#c8d3e0");
+  drawButton(BACK_BTN, "BACK");
 }
 
 function drawConfirmNew() {
@@ -712,12 +780,12 @@ function drawOverlay() {
   } else {
     centerText("OVERRUN!", 236, "bold 40", "#fff");
     centerText("Score: " + game.score, 280, "bold 24", "#fff");
-    // run summary: wave reached, time survived, kills
+    // run summary: wave reached, time survived, kills, coins earned
     panel(40, 302, G.W - 80, 70, 12, "rgba(255,255,255,0.08)");
-    const stats = [["WAVE", String(game.wave)], ["TIME", fmtTime(game.elapsed)], ["KILLS", String(game.kills)]];
+    const stats = [["WAVE", String(game.wave)], ["TIME", fmtTime(game.elapsed)], ["KILLS", String(game.kills)], ["COINS", "+" + game.earned]];
     stats.forEach(([name, value], i) => {
-      label(value, 100 + i * 100, 334, "bold 20", "#fff");
-      label(name, 100 + i * 100, 358, "16", "#9fd4ff");
+      label(value, 80 + i * 80, 334, "bold 20", i === 3 ? "#f5c211" : "#fff");
+      label(name, 80 + i * 80, 358, "16", "#9fd4ff");
     });
     if (game.newBest) centerText("★ NEW BEST! ★", 410, "bold 24", "#ffd84d");
     else centerText("Best: " + game.best, 406, "21", "#9fd4ff");
@@ -789,6 +857,7 @@ function draw() {
   ctx.restore();
   if (ui.board) drawBoard();
   else if (ui.settings) drawSettings();
+  else if (ui.shop) drawShop();
   else if (ui.confirmNew && game.inRun) drawConfirmNew();
   else if (game.state === "menu") drawMenu();
   else if (game.state !== "playing") drawOverlay();
@@ -817,6 +886,7 @@ function loop(now) {
     engine.setMood(game.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
     if (game.state === "gameover" && prevState === "playing") engine.gameOverJingle(game.newBest);
   }
+  if (game.state === "gameover" && prevState === "playing") storeMeta(); // the run just paid out its coins
   // Keep a resumable run stored while it is paused or behind the menu, and
   // drop it the moment play continues or the run ends.
   const keep = G.hasRun(game);

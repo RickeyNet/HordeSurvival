@@ -229,3 +229,56 @@ test('first run: hints for moving and gates, shown only once', async () => {
   });
   jest.useRealTimers();
 });
+
+test('upgrades: coins from a run buy a level, saved across a restart', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  jest.useFakeTimers();
+  let app = await mount();
+  const { G, MENU_BTNS, UPGRADE_ROWS, BACK_BTN, HOME_BTN } = app;
+  const spy = jest.spyOn(G, 'resetRun');
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  await app.tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  expect(g.player.troops).toBe(1);
+  // end the run with enough score to afford the first troop upgrade
+  const cost = G.UPGRADES.troops.costs[0];
+  g.score = cost * 10 + 30;
+  g.zombies.push({
+    x: G.ROAD_MID, y: G.PLAYER_Y + 25, hp: 1, maxHp: 1, size: 13, speed: 0,
+    wob: 0, kind: 'walker', troopCost: 99, scoreVal: 1,
+  });
+  await app.tap(G.W / 2, 400); // game over is drawn with the coins earned
+  expect(g.state).toBe('gameover');
+  expect(g.coins).toBe(cost + 3);
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta')).coins).toBe(cost + 3);
+  await app.tapBtn(HOME_BTN);
+  // the shop: a row buys a level; one that costs too much does nothing
+  const row = (key) => UPGRADE_ROWS.find((r) => r.key === key);
+  await app.tapBtn(MENU_BTNS.shop);
+  await app.tapBtn(MENU_BTNS.fight); // covered by the shop
+  expect(spy).toHaveBeenCalledTimes(1);
+  await app.tapBtn(row('damage'));
+  expect(g.upgrades.damage).toBe(0);
+  await app.tapBtn(row('troops'));
+  expect(g.upgrades.troops).toBe(1);
+  expect(g.coins).toBe(3);
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({ v: 1, coins: 3, upgrades: { troops: 1, damage: 0, wall: 0 } });
+  await app.tapBtn(BACK_BTN);
+  // "restart the app": the upgrade is still there and the next run uses it
+  await ReactTestRenderer.act(() => { app.tree.unmount(); });
+  app = await mount();
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  await app.tapBtn(MENU_BTNS.shop); // draws a bought level
+  await app.tapBtn(BACK_BTN);
+  await app.tapBtn(MENU_BTNS.fight);
+  const g2 = spy.mock.calls[1][0];
+  expect(g2).not.toBe(g);
+  expect(g2.coins).toBe(3);
+  expect(g2.player.troops).toBe(2);
+  spy.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});

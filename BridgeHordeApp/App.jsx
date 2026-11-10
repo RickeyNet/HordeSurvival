@@ -454,10 +454,11 @@ function drawHUD(c, g) {
 
 // ---------- Menu buttons (world coordinates) ----------
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
-export const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: btn(460, 54) };
+export const MENU_BTNS = { fight: btn(310, 64), shop: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
 // Menu while a run is waiting: Resume takes the top spot, the rest move down.
-export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), shop: btn(460, 54), board: btn(528, 54), settings: btn(596, 54) };
 const RUN_KEY = "hordeRun";
+const META_KEY = "hordeMeta"; // coins and upgrades (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 // "Start a new run?" dialog, shown before New Run discards a waiting run.
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
@@ -481,6 +482,8 @@ export const SETTING_ROWS = [
   { key: "shake", label: "Screen shake" },
   { key: "haptics", label: "Vibration" },
 ].map((r, i) => ({ ...r, x: 36, y: 150 + i * 76, w: G.W - 72, h: 60 }));
+// Upgrade shop: one row per entry in G.UPGRADES; tapping a row buys a level.
+export const UPGRADE_ROWS = Object.keys(G.UPGRADES).map((key, i) => ({ key, x: 24, y: 160 + i * 112, w: G.W - 48, h: 96 }));
 const hit = (b, wx, wy) => wx >= b.x && wx <= b.x + b.w && wy >= b.y && wy <= b.y + b.h;
 
 function centerText(c, str, y, font, size, color) {
@@ -499,23 +502,71 @@ function drawButton(c, b, label, primary) {
   }
 }
 
+// A coin and an amount, centered on cx.
+function drawCoins(c, cx, y, amount, font, size, color) {
+  const str = String(amount);
+  const r = size * 0.4;
+  const x = cx - (r * 2 + 6 + textWidth(font, str, size)) / 2;
+  c.drawCircle(x + r, y - size * 0.34, r, fill("#f5c211"));
+  c.drawCircle(x + r, y - size * 0.34, r, stroke("#a87b00", 1.5));
+  text(c, str, x + r * 2 + 6, y, fill(color), font);
+}
+
 function drawMenu(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
   centerText(c, "HORDE SURVIVAL", 208, fonts.title, 40, "#ffffff");
+  drawCoins(c, G.W / 2, 286, g.coins, fonts.sub, 21, "#f5c211");
   if (g.inRun) {
     centerText(c, "Wave " + g.wave + "  -  Score " + g.score, 252, fonts.sub, 21, "#9fd4ff");
     drawButton(c, RUN_MENU_BTNS.resume, "RESUME", true);
     drawButton(c, RUN_MENU_BTNS.fight, "NEW RUN");
+    drawButton(c, RUN_MENU_BTNS.shop, "UPGRADES");
     drawButton(c, RUN_MENU_BTNS.board, "LEADERBOARDS");
     drawButton(c, RUN_MENU_BTNS.settings, "SETTINGS");
     return;
   }
   centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
   drawButton(c, MENU_BTNS.fight, "FIGHT HORDE", true);
+  drawButton(c, MENU_BTNS.shop, "UPGRADES");
   drawButton(c, MENU_BTNS.board, "LEADERBOARDS");
   drawButton(c, MENU_BTNS.settings, "SETTINGS");
-  centerText(c, "Drag to move - you fire automatically", 588, fonts.small, 16, "#c8d3e0");
-  centerText(c, "Steer into gates - avoid the red ones!", 612, fonts.small, 16, "#c8d3e0");
+  centerText(c, "Drag to move - you fire automatically", 618, fonts.small, 16, "#c8d3e0");
+  centerText(c, "Steer into gates - avoid the red ones!", 642, fonts.small, 16, "#c8d3e0");
+}
+
+function drawShop(c, g) {
+  rect(c, 0, 0, G.W, G.H, fill("rgba(5,8,14,0.92)"));
+  centerText(c, "UPGRADES", 84, fonts.title, 40, "#ffffff");
+  drawCoins(c, G.W / 2, 128, g.coins, fonts.cta, 24, "#f5c211");
+  for (const r of UPGRADE_ROWS) {
+    const u = G.UPGRADES[r.key];
+    const level = g.upgrades[r.key], top = u.costs.length;
+    const cost = G.upgradeCost(g, r.key);
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(r.x, r.y, r.w, r.h), 12, 12), fill("rgba(255,255,255,0.08)"));
+    text(c, u.label, r.x + 16, r.y + 30, fill("#ffffff"), fonts.hud);
+    text(c, u.desc, r.x + 16, r.y + 53, fill("#c8d3e0"), fonts.small);
+    // one pip per level, then what the level gives now and next
+    for (let i = 0; i < top; i++) {
+      c.drawRRect(Skia.RRectXY(Skia.XYWHRect(r.x + 16 + i * 20, r.y + 68, 15, 10), 3, 3), fill(i < level ? "#f5c211" : "rgba(255,255,255,0.18)"));
+    }
+    const value = u.value(level) + (cost === null ? "" : "  >  " + u.value(level + 1));
+    text(c, value, r.x + 24 + top * 20, r.y + 79, fill("#9fd4ff"), fonts.small);
+    // price
+    const bx = r.x + r.w - 96, by = r.y + 22, bw = 82, bh = 52;
+    const box = Skia.RRectXY(Skia.XYWHRect(bx, by, bw, bh), 10, 10);
+    if (cost === null) {
+      text(c, "MAX", bx + bw / 2 - textWidth(fonts.hud, "MAX", 20) / 2, by + bh / 2 + 7, fill("#8fe3a8"), fonts.hud);
+    } else if (g.coins >= cost) {
+      c.drawRRect(box, fill("#f5c211"));
+      drawCoins(c, bx + bw / 2, by + bh / 2 + 7, cost, fonts.hud, 20, "#1a1405");
+    } else {
+      c.drawRRect(box, fill("rgba(255,255,255,0.08)"));
+      drawCoins(c, bx + bw / 2, by + bh / 2 + 7, cost, fonts.hud, 20, "#8b93a3");
+    }
+  }
+  centerText(c, "Every run pays coins when it ends.", 524, fonts.small, 16, "#c8d3e0");
+  centerText(c, "Starting upgrades count from the next run.", 548, fonts.small, 16, "#c8d3e0");
+  drawButton(c, BACK_BTN, "BACK");
 }
 
 function drawConfirmNew(c, g) {
@@ -647,12 +698,12 @@ function drawOverlay(c, g, standing) {
   } else {
     centerText(c, "OVERRUN!", 216, fonts.title, 40, "#ffffff");
     centerText(c, "Score: " + g.score, 258, fonts.cta, 24, "#ffffff");
-    // run summary: wave reached, time survived, kills
+    // run summary: wave reached, time survived, kills, coins earned
     c.drawRRect(Skia.RRectXY(Skia.XYWHRect(40, 278, G.W - 80, 70), 12, 12), fill("rgba(255,255,255,0.08)"));
-    const stats = [["WAVE", String(g.wave)], ["TIME", fmtTime(g.elapsed)], ["KILLS", String(g.kills)]];
+    const stats = [["WAVE", String(g.wave)], ["TIME", fmtTime(g.elapsed)], ["KILLS", String(g.kills)], ["COINS", "+" + g.earned]];
     stats.forEach(([label, value], i) => {
-      const cx = 100 + i * 100;
-      text(c, value, cx - textWidth(fonts.hud, value, 20) / 2, 310, fill("#ffffff"), fonts.hud);
+      const cx = 80 + i * 80;
+      text(c, value, cx - textWidth(fonts.hud, value, 20) / 2, 310, fill(i === 3 ? "#f5c211" : "#ffffff"), fonts.hud);
       text(c, label, cx - textWidth(fonts.small, label, 16) / 2, 334, fill("#9fd4ff"), fonts.small);
     });
     if (g.newBest) centerText(c, "★ NEW BEST! ★", 386, fonts.cta, 24, "#ffd84d");
@@ -717,6 +768,7 @@ function drawGame(c, g, layout, t, ui) {
   if (ui.namePick) drawNamePicker(c, ui.namePick);
   else if (ui.board) drawBoard(c, ui.board);
   else if (ui.settings) drawSettings(c);
+  else if (ui.shop) drawShop(c, g);
   else if (ui.confirmNew && g.inRun) drawConfirmNew(c, g);
   else if (g.state === "menu") drawMenu(c, g);
   else if (g.state !== "playing") drawOverlay(c, g, ui.standing);
@@ -733,6 +785,7 @@ export default function App() {
   const namePick = useRef(null); // open name picker ({ a, b, n }), over the leaderboard
   const standing = useRef(null); // { data }: leaderboard places for the game-over screen
   const settingsOpen = useRef(false);
+  const shopOpen = useRef(false); // upgrade shop
   const confirmNew = useRef(false); // "start a new run?" dialog over the menu
   const tutorial = useRef({ on: false, moved: 0 }); // first-run hints, see tutorialHint
 
@@ -770,6 +823,7 @@ export default function App() {
       if (namePick.current) namePick.current = null;
       else if (board.current) board.current = null;
       else if (settingsOpen.current) settingsOpen.current = false;
+      else if (shopOpen.current) shopOpen.current = false;
       else if (confirmNew.current) confirmNew.current = false;
       else if (g.state === "playing") G.togglePause(g);
       else if (g.state !== "menu") G.toMenu(g);
@@ -806,6 +860,22 @@ export default function App() {
       })
       .catch(() => {})
       .finally(() => { bestLoaded.current = true; });
+  }, []);
+
+  // Load coins and upgrades. As with the best score, nothing is written until
+  // the stored copy has arrived, so it can never be replaced by an empty one.
+  const metaLoaded = useRef(false);
+  const storeMeta = () => {
+    if (metaLoaded.current) AsyncStorage.setItem(META_KEY, G.saveMeta(game.current)).catch(() => {});
+  };
+  useEffect(() => {
+    AsyncStorage.getItem(META_KEY)
+      .then((raw) => { if (raw) G.loadMeta(game.current, raw); })
+      .catch(() => {})
+      .finally(() => {
+        metaLoaded.current = true;
+        if (game.current.coins > 0) storeMeta(); // includes anything earned while loading
+      });
   }, []);
 
   // Bring back a run that was left unfinished when the app last closed.
@@ -870,6 +940,7 @@ export default function App() {
       if (g.state === "gameover" && prevState === "playing") {
         const s = { data: null }; // a later game over replaces it, so a late answer can't show on the wrong run
         standing.current = s;
+        storeMeta(); // the run just paid out its coins
         LB.recordRun(g.score, g.wave, g.elapsed).then((data) => { s.data = data; }).catch(() => {});
       }
       if (engine) {
@@ -944,6 +1015,20 @@ export default function App() {
       }
       return;
     }
+    if (shopOpen.current) {
+      const row = UPGRADE_ROWS.find((r) => hit(r, wx, wy));
+      if (row) {
+        if (!G.buyUpgrade(g, row.key)) return; // top level, or not enough coins
+        storeMeta();
+        haptic("impactMedium");
+      } else if (hit(BACK_BTN, wx, wy)) {
+        shopOpen.current = false;
+      } else {
+        return;
+      }
+      if (engine) engine.click();
+      return;
+    }
     if (g.state === "menu") {
       if (confirmNew.current && g.inRun) {
         // anything but "start new run" keeps the waiting run
@@ -963,6 +1048,9 @@ export default function App() {
         } else {
           G.resetRun(g);
         }
+      } else if (hit(btns.shop, wx, wy)) {
+        shopOpen.current = true;
+        if (engine) engine.click();
       } else if (hit(btns.board, wx, wy)) {
         openBoard();
         if (engine) engine.click();
@@ -1001,7 +1089,7 @@ export default function App() {
   };
 
   const t = Date.now() / 1000;
-  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
+  const picture = createPicture((c) => drawGame(c, game.current, layout, t, { board: board.current, namePick: namePick.current, standing: standing.current && standing.current.data, settings: settingsOpen.current, shop: shopOpen.current, confirmNew: confirmNew.current, hint: tutorialHint(tutorial.current, game.current) }));
 
   return (
     <View

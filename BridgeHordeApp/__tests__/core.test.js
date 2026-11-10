@@ -490,3 +490,93 @@ describe('losing troops', () => {
     expect(saveBest).not.toHaveBeenCalled();
   });
 });
+
+describe('coins and upgrades', () => {
+  test('a finished run pays coins for its score and wave', () => {
+    expect(G.coinsFor(0, 1)).toBe(0);
+    expect(G.coinsFor(259, 6)).toBe(25 + 10);
+    const g = run({ score: 259, wave: 6, coins: 7 });
+    g.zombies.push(zombie({ y: G.PLAYER_Y - 8 }));
+    G.update(g, 0);
+    expect(g.state).toBe('gameover');
+    expect(g.earned).toBe(35);
+    expect(g.coins).toBe(42);
+    // coins and upgrades outlive the run; the payout line does not
+    g.upgrades.wall = 2;
+    G.toMenu(g);
+    expect(g.coins).toBe(42);
+    expect(g.earned).toBe(0);
+    expect(g.upgrades.wall).toBe(2);
+  });
+
+  test('buying costs coins and stops at the top level', () => {
+    const g = G.newGame();
+    const [first, second] = G.UPGRADES.troops.costs;
+    g.coins = first + second - 1;
+    expect(G.upgradeCost(g, 'troops')).toBe(first);
+    expect(G.buyUpgrade(g, 'troops')).toBe(true);
+    expect(g.upgrades.troops).toBe(1);
+    expect(g.coins).toBe(second - 1);
+    expect(G.buyUpgrade(g, 'troops')).toBe(false); // one coin short
+    expect(g.upgrades.troops).toBe(1);
+    expect(g.coins).toBe(second - 1);
+    g.coins = 1e6;
+    g.upgrades.damage = G.UPGRADES.damage.costs.length;
+    expect(G.upgradeCost(g, 'damage')).toBeNull();
+    expect(G.buyUpgrade(g, 'damage')).toBe(false);
+    expect(g.coins).toBe(1e6);
+  });
+
+  test('a new run starts with the bought troops and damage', () => {
+    const g = G.newGame();
+    g.upgrades = { troops: 3, damage: 2, wall: 0 };
+    G.resetRun(g);
+    expect(g.player.troops).toBe(4);
+    expect(g.player.damage).toBe(3);
+    G.resetRun(g); // not added twice
+    expect(g.player.troops).toBe(4);
+    expect(g.player.damage).toBe(3);
+  });
+
+  test('wall strength makes every wall tougher', () => {
+    const g = run({ wave: 2 });
+    g.upgrades.wall = 3;
+    G.buildWall(g);
+    expect(g.walls[0].maxHp).toBe(Math.round((50 + 22 * 2) * (1 + 3 * G.WALL_BONUS)));
+    expect(g.walls[0].hp).toBe(g.walls[0].maxHp);
+  });
+
+  test('coins and upgrades save and load', () => {
+    const g = G.newGame();
+    g.coins = 310;
+    g.upgrades = { troops: 2, damage: 1, wall: 4 };
+    const fresh = G.newGame();
+    fresh.coins = 5; // earned before the stored copy arrived
+    expect(G.loadMeta(fresh, G.saveMeta(g))).toBe(true);
+    expect(fresh.coins).toBe(315);
+    expect(fresh.upgrades).toEqual({ troops: 2, damage: 1, wall: 4 });
+  });
+
+  test('loadMeta ignores junk and keeps levels in range', () => {
+    const g = G.newGame();
+    expect(G.loadMeta(g, 'not json')).toBe(false);
+    expect(G.loadMeta(g, 'null')).toBe(false);
+    expect(G.loadMeta(g, JSON.stringify({ v: 99, coins: 50 }))).toBe(false);
+    expect(g.coins).toBe(0);
+    expect(G.loadMeta(g, JSON.stringify({ v: 1, coins: -20, upgrades: { troops: 99, damage: 'x', wall: 1.7 } }))).toBe(true);
+    expect(g.coins).toBe(0);
+    expect(g.upgrades).toEqual({ troops: G.UPGRADES.troops.costs.length, damage: 0, wall: 1 });
+  });
+
+  test('loading a saved run leaves coins and upgrades alone', () => {
+    const old = run({ score: 30, coins: 100 });
+    const saved = G.saveRun(old);
+    const g = G.newGame();
+    g.coins = 20; // spent since the run was saved
+    g.upgrades.troops = 2;
+    expect(G.loadRun(g, saved)).toBe(true);
+    expect(g.score).toBe(30);
+    expect(g.coins).toBe(20);
+    expect(g.upgrades.troops).toBe(2);
+  });
+});

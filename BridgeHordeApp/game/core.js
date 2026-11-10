@@ -66,6 +66,9 @@ export function newGame() {
     kills: 0,
     inRun: false, // on the menu with a run waiting to be resumed
     best: 0,
+    coins: 0, // spent on upgrades; kept between runs like the best score
+    upgrades: { troops: 0, damage: 0, wall: 0 }, // level per UPGRADES entry
+    earned: 0, // coins paid out by the run that just ended
     newBest: false,
     wave: 1,
     waveTimer: WAVE_LEN,
@@ -78,10 +81,16 @@ export function newGame() {
   };
 }
 
+// Start over, keeping what outlives a run: best score, coins and upgrades.
+function clearRun(g) {
+  const { best, coins, upgrades } = g;
+  Object.assign(g, newGame(), { best, coins, upgrades });
+}
+
 export function resetRun(g) {
-  const best = g.best;
-  Object.assign(g, newGame());
-  g.best = best;
+  clearRun(g);
+  g.player.troops += g.upgrades.troops;
+  g.player.damage += g.upgrades.damage;
   g.state = "playing";
   g.banner = { text: "WAVE 1", life: 2 };
 }
@@ -94,9 +103,7 @@ export function toMenu(g) {
     g.inRun = true;
     return;
   }
-  const best = g.best;
-  Object.assign(g, newGame());
-  g.best = best;
+  clearRun(g);
 }
 
 // Pick a kept run back up from the menu.
@@ -123,7 +130,57 @@ export function loadRun(g, json) {
   const run = saved && saved.v === SAVE_VERSION && saved.run;
   if (!run || !run.player || !Array.isArray(run.zombies) || !Array.isArray(run.gates)) return false;
   const best = Math.max(g.best, Number(run.best) || 0);
-  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best });
+  // coins and upgrades are stored on their own (saveMeta), so the copy inside
+  // a saved run may be out of date and is never used
+  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins: g.coins, upgrades: g.upgrades });
+  return true;
+}
+
+// ---------- Coins and permanent upgrades ----------
+// A finished run pays out coins; they buy upgrades that apply to every later
+// run. costs[i] is the price of level i + 1, so its length is the top level.
+// value(level) is the short text a shop screen shows for that level.
+export const WALL_BONUS = 0.2; // extra wall hit points per level
+export const UPGRADES = {
+  troops: { label: "STARTING TROOPS", desc: "Squad size at the start", costs: [50, 120, 250, 500], value: (l) => String(1 + l) },
+  damage: { label: "STARTING DAMAGE", desc: "Damage at the start", costs: [100, 250, 600], value: (l) => String(1 + l) },
+  wall: { label: "WALL STRENGTH", desc: "Hit points of every wall", costs: [40, 80, 140, 220, 320], value: (l) => "+" + Math.round(l * WALL_BONUS * 100) + "%" },
+};
+export function coinsFor(score, wave) {
+  return Math.floor(score / 10) + (wave - 1) * 2;
+}
+// Price of the next level, or null when the upgrade is at its top level.
+export function upgradeCost(g, key) {
+  const cost = UPGRADES[key].costs[g.upgrades[key]];
+  return cost === undefined ? null : cost;
+}
+// Starting troops and damage take effect from the next run; wall strength
+// from the next wall built.
+export function buyUpgrade(g, key) {
+  const cost = upgradeCost(g, key);
+  if (cost === null || g.coins < cost) return false;
+  g.coins -= cost;
+  g.upgrades[key]++;
+  return true;
+}
+
+// Coins and upgrades as a JSON string, and back, for the platform to store.
+// Coins already in g when the stored ones arrive (a run that ended before
+// loading finished) are added on top, not lost.
+const META_VERSION = 1;
+export function saveMeta(g) {
+  return JSON.stringify({ v: META_VERSION, coins: g.coins, upgrades: g.upgrades });
+}
+export function loadMeta(g, json) {
+  let saved;
+  try { saved = JSON.parse(json); } catch { return false; }
+  if (!saved || saved.v !== META_VERSION) return false;
+  const whole = (n, max) => Math.max(0, Math.min(max, Math.floor(Number(n)) || 0));
+  g.coins += whole(saved.coins, Number.MAX_SAFE_INTEGER);
+  const levels = saved.upgrades || {};
+  for (const key of Object.keys(UPGRADES)) {
+    g.upgrades[key] = Math.max(g.upgrades[key], whole(levels[key], UPGRADES[key].costs.length));
+  }
   return true;
 }
 
@@ -161,7 +218,7 @@ export function formationHalfWidth(g) {
 // Fixed build slots, nearest to the squad first; extra picks repair.
 export const WALL_SLOTS = [PLAYER_Y - 170, PLAYER_Y - 230, PLAYER_Y - 290];
 export function buildWall(g) {
-  const maxHp = 50 + 22 * g.wave;
+  const maxHp = Math.round((50 + 22 * g.wave) * (1 + WALL_BONUS * g.upgrades.wall));
   const used = new Set(g.walls.map((w) => w.y));
   const slot = WALL_SLOTS.find((s) => !used.has(s));
   if (slot !== undefined) {
@@ -475,6 +532,8 @@ export function update(g, dt, saveBest) {
     if (g.player.troops <= 0) {
       g.player.troops = 0;
       g.state = "gameover";
+      g.earned = coinsFor(g.score, g.wave);
+      g.coins += g.earned;
       if (g.score > g.best) {
         g.best = g.score;
         g.newBest = true;

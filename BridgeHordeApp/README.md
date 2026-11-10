@@ -1,6 +1,6 @@
 # Horde Survival
 
-A mobile game where your squad holds a bridge against waves of zombies. The squad fires on its own; you drag left and right to aim it and to steer into gates that add troops, damage, fire rate, walls or a new weapon. Every third wave brings a boss. The run ends when the last soldier falls.
+A mobile game where your squad holds a bridge against waves of zombies. The squad fires on its own; you drag left and right to aim it and to steer into gates that add troops, damage, fire rate, walls or a new weapon. Every third wave brings a boss. The run ends when the last soldier falls, and pays out coins that buy permanent upgrades: a bigger starting squad, more starting damage, stronger walls.
 
 Built with React Native and drawn with [React Native Skia](https://shopify.github.io/react-native-skia/). The project and package are named `BridgeHorde`; the name players see is "Horde Survival".
 
@@ -10,7 +10,7 @@ Built with React Native and drawn with [React Native Skia](https://shopify.githu
 | --- | --- |
 | `game/core.js` | All game rules, as plain JavaScript with no rendering or platform code. Tune gameplay here. |
 | `game/audio.js` | Music and sound effects, shared by the app and the browser page. |
-| `App.jsx` | The app: drawing, touch input, menus, settings, saved runs, haptics. |
+| `App.jsx` | The app: drawing, touch input, menus, upgrade shop, settings, saved runs, haptics. |
 | `leaderboard.js` | Client for the global leaderboard. |
 | `names.js` | Word lists for leaderboard names (must match the server's). |
 | `web/dev.html` | The same game in a browser, for quick gameplay tuning. |
@@ -61,6 +61,10 @@ npm run lint
 
 The app tests run the real Skia drawing code through CanvasKit, so they catch drawing errors as well as logic errors.
 
+## Coins and upgrades
+
+A run pays coins when it ends: one per 10 points plus two per wave cleared (`coinsFor` in `game/core.js`). The Upgrades screen on the main menu spends them. Prices and top levels are the `costs` lists in `UPGRADES`, also in `game/core.js`. Leaving a run unfinished and starting a new one pays nothing for the old run.
+
 ## Leaderboard
 
 The leaderboard is off until `LEADERBOARD_URL` in `leaderboard.js` is set. To turn it on, deploy the Worker and paste in the URL it prints:
@@ -98,4 +102,4 @@ The version lives in three places that should be kept in step: `package.json`, `
 
 ## Data kept on the device
 
-Best score, settings, an unfinished run, the anonymous player id and a score waiting to be sent are stored with AsyncStorage. Nothing else is collected.
+Best score, coins and upgrades, settings, an unfinished run, the anonymous player id and a score waiting to be sent are stored with AsyncStorage. Nothing else is collected.

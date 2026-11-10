@@ -4,7 +4,7 @@
 - [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
 - [ ] Add the iOS app icon images (the `AppIcon` asset set is empty) and set a development team in Xcode
 - [ ] Set up Android release signing (`android/keystore.properties` + release keystore); without it release builds use the debug keystore
-- [ ] Check the main menu, resume flow, new-run confirmation, first-run hints, settings screen, game-over summary (with the rank line), leaderboard tabs, name picker and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
+- [ ] Check the main menu, resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, game-over summary (with the rank line and coins), leaderboard tabs, name picker and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
 
 ## Cleanup
 - [x] Align version numbers (all 1.1; build numbers stay per platform: Android `versionCode` 2, iOS 1)
@@ -21,7 +21,7 @@
 - [x] First-run tutorial hints during wave 1 (move, then gates; shown once)
 
 ## Reasons to keep playing
-- [ ] Persistent upgrades: earn coins per run, spend on starting troops, damage, wall strength
+- [x] Persistent upgrades: earn coins per run, spend on starting troops, damage, wall strength (prices and coin payout are first guesses; tune from playtests)
 - [ ] Daily challenge: one fixed seed per day with its own leaderboard
 - [ ] Achievements / milestones (e.g. reach wave 10, beat a boss with the rifle)
 - [x] Leaderboard depth: rank on the game-over screen, weekly board, player-chosen names (picked from the word lists, not typed)
