@@ -6,6 +6,11 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 
+afterEach(async () => {
+  // a run left behind the menu is stored; don't let it leak into the next test
+  await require('@react-native-async-storage/async-storage').default.clear();
+});
+
 test('renders and runs a few frames without throwing', async () => {
   // Required lazily: the Skia mock needs CanvasKit, loaded in beforeAll.
   const App = require('../App').default;
@@ -116,6 +121,59 @@ test('game over: buzzes and draws the run summary', async () => {
   await ReactTestRenderer.act(() => {
     jest.advanceTimersByTime(200);
     tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('a run left for the main menu can be resumed, and survives a restart', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  jest.useFakeTimers();
+  let app = await mount();
+  const { G, HOME_BTN, MENU_BTNS, RUN_MENU_BTNS } = app;
+  const spy = jest.spyOn(G, 'resetRun');
+  await app.tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  g.score = 123;
+  g.wave = 4;
+  g.gates.push({ y: 100, left: { label: 'DMG +1', color: '#fff', type: 'damage' }, right: { label: 'x', color: '#fff', type: 'wall' }, used: false });
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  expect(g.state).toBe('menu');
+  expect(g.inRun).toBe(true);
+  expect(g.score).toBe(123);
+  expect(JSON.parse(await AsyncStorage.getItem('hordeRun')).run.score).toBe(123);
+  // resume: same run, and the stored copy is dropped
+  await app.tapBtn(RUN_MENU_BTNS.resume);
+  expect(g.state).toBe('playing');
+  expect(g.score).toBeGreaterThanOrEqual(123);
+  expect(spy).toHaveBeenCalledTimes(1);
+  expect(await AsyncStorage.getItem('hordeRun')).toBeNull();
+  // leave again, then "restart the app"
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  await ReactTestRenderer.act(() => { app.tree.unmount(); });
+  const load = jest.spyOn(G, 'loadRun');
+  app = await mount();
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  const g2 = load.mock.calls[0][0];
+  expect(g2).not.toBe(g);
+  expect(g2.inRun).toBe(true);
+  expect(g2.wave).toBe(4);
+  expect(g2.gates.length).toBe(g.gates.length);
+  await app.tapBtn(RUN_MENU_BTNS.resume);
+  expect(g2.state).toBe('playing');
+  // New Run from the menu abandons the kept run
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  await app.tapBtn(RUN_MENU_BTNS.fight);
+  expect(g2.state).toBe('playing');
+  expect(g2.score).toBe(0);
+  expect(await AsyncStorage.getItem('hordeRun')).toBeNull();
+  spy.mockRestore();
+  load.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
   });
   jest.useRealTimers();
 });

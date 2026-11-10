@@ -4,7 +4,7 @@
 - [ ] Deploy the leaderboard Worker (`leaderboard/`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
 - [ ] Add the iOS app icon images (the `AppIcon` asset set is empty) and set a development team in Xcode
 - [ ] Set up Android release signing (`android/keystore.properties` + release keystore); without it release builds use the debug keystore
-- [ ] Check the main menu, settings screen, game-over summary and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
+- [ ] Check the main menu, resume flow, settings screen, game-over summary and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
 
 ## Cleanup
 - [ ] Align version numbers (`package.json` 0.0.1, Android 1.1, iOS 1.0)
@@ -16,7 +16,8 @@
 ## Feel
 - [x] Haptics on troop lost, boss spawn and game over, with a toggle in settings
 - [x] Game-over summary: wave reached, time survived, kills
-- [ ] Confirm before quitting a paused run to the main menu (it currently discards the run)
+- [x] Resume a run from the main menu (leaving a paused run keeps it, also across app restarts)
+- [ ] Confirm before New Run on the main menu when a run is waiting (it discards that run)
 - [ ] First-run tutorial hints during wave 1
 
 ## Reasons to keep playing

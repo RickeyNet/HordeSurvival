@@ -454,6 +454,9 @@ function drawHUD(c, g) {
 // ---------- Menu buttons (world coordinates) ----------
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
 export const MENU_BTNS = { fight: btn(310, 64), board: btn(392, 54), settings: btn(460, 54) };
+// Menu while a run is waiting: Resume takes the top spot, the rest move down.
+export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), board: btn(460, 54), settings: btn(528, 54) };
+const RUN_KEY = "hordeRun";
 export const HOME_BTN = btn(G.H / 2 + 122, 46); // "MAIN MENU" on the pause / game-over overlay
 export const BACK_BTN = btn(G.H - 120, 50); // settings screen
 export const SETTING_ROWS = [
@@ -482,6 +485,14 @@ function drawButton(c, b, label, primary) {
 function drawMenu(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
   centerText(c, "HORDE SURVIVAL", 208, fonts.title, 40, "#ffffff");
+  if (g.inRun) {
+    centerText(c, "Wave " + g.wave + "  -  Score " + g.score, 252, fonts.sub, 21, "#9fd4ff");
+    drawButton(c, RUN_MENU_BTNS.resume, "RESUME", true);
+    drawButton(c, RUN_MENU_BTNS.fight, "NEW RUN");
+    drawButton(c, RUN_MENU_BTNS.board, "LEADERBOARDS");
+    drawButton(c, RUN_MENU_BTNS.settings, "SETTINGS");
+    return;
+  }
   centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
   drawButton(c, MENU_BTNS.fight, "FIGHT HORDE", true);
   drawButton(c, MENU_BTNS.board, "LEADERBOARDS");
@@ -660,7 +671,8 @@ export default function App() {
   }, []);
 
   // Android back button: close a screen, pause a run, or leave a finished /
-  // paused run for the menu. On the menu itself it exits the app as usual.
+  // paused run for the menu (a paused run stays resumable). On the menu
+  // itself it exits the app as usual.
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
       const g = game.current;
@@ -703,11 +715,24 @@ export default function App() {
       .finally(() => { bestLoaded.current = true; });
   }, []);
 
+  // Bring back a run that was left unfinished when the app last closed.
+  useEffect(() => {
+    AsyncStorage.getItem(RUN_KEY)
+      .then((raw) => {
+        const g = game.current;
+        if (raw && g.state === "menu" && !g.inRun) G.loadRun(g, raw);
+      })
+      .catch(() => {});
+  }, []);
+
   // Auto-pause (and silence the music) when the app goes to the background
   useEffect(() => {
     const sub = AppState.addEventListener("change", (next) => {
       if (next !== "active") {
-        if (game.current.state === "playing") G.togglePause(game.current);
+        const g = game.current;
+        if (g.state === "playing") G.togglePause(g);
+        // frames stop in the background, so store the run right now
+        if (G.hasRun(g)) AsyncStorage.setItem(RUN_KEY, G.saveRun(g)).catch(() => {});
         if (engine) engine.stopMusic();
       } else if (engine) {
         engine.startMusic();
@@ -720,6 +745,7 @@ export default function App() {
     let running = true;
     let last = Date.now();
     let prevState = game.current.state;
+    let runStored = null; // unknown until the first frame settles it
     const saveBest = (b) => {
       if (bestLoaded.current) AsyncStorage.setItem("bridgeHordeBest", String(b)).catch(() => {});
     };
@@ -741,6 +767,14 @@ export default function App() {
         const bossAlive = g.zombies.some((z) => z.boss);
         engine.setMood(g.state === "playing" ? (bossAlive ? "boss" : "play") : "menu");
         if (g.state === "gameover" && prevState === "playing") engine.gameOverJingle(g.newBest);
+      }
+      // Keep a resumable run on disk while it is paused or behind the menu,
+      // and drop it the moment play continues or the run ends.
+      const keep = G.hasRun(g);
+      if (keep !== runStored && (keep || g.state !== "menu")) {
+        runStored = keep;
+        if (keep) AsyncStorage.setItem(RUN_KEY, G.saveRun(g)).catch(() => {});
+        else AsyncStorage.removeItem(RUN_KEY).catch(() => {});
       }
       prevState = g.state;
       setTick((t) => t + 1);
@@ -777,12 +811,16 @@ export default function App() {
       return;
     }
     if (g.state === "menu") {
-      if (hit(MENU_BTNS.fight, wx, wy)) {
+      const btns = g.inRun ? RUN_MENU_BTNS : MENU_BTNS;
+      if (g.inRun && hit(btns.resume, wx, wy)) {
+        G.resumeRun(g);
+        if (engine) engine.click();
+      } else if (hit(btns.fight, wx, wy)) {
         G.resetRun(g);
-      } else if (hit(MENU_BTNS.board, wx, wy)) {
+      } else if (hit(btns.board, wx, wy)) {
         openBoard();
         if (engine) engine.click();
-      } else if (hit(MENU_BTNS.settings, wx, wy)) {
+      } else if (hit(btns.settings, wx, wy)) {
         settingsOpen.current = true;
         if (engine) engine.click();
       }

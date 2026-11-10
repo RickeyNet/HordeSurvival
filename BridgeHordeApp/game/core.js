@@ -64,6 +64,7 @@ export function newGame() {
     banner: { text: "", life: 0 }, // big center-screen announcement
     score: 0,
     kills: 0,
+    inRun: false, // on the menu with a run waiting to be resumed
     best: 0,
     newBest: false,
     wave: 1,
@@ -85,11 +86,45 @@ export function resetRun(g) {
   g.banner = { text: "WAVE 1", life: 2 };
 }
 
-// Back to the main menu with a clean bridge behind it (abandons any run).
+// Back to the main menu. A paused run is kept so it can be resumed from
+// there; a finished one is cleared away.
 export function toMenu(g) {
+  if (g.state === "paused") {
+    g.state = "menu";
+    g.inRun = true;
+    return;
+  }
   const best = g.best;
   Object.assign(g, newGame());
   g.best = best;
+}
+
+// Pick a kept run back up from the menu.
+export function resumeRun(g) {
+  if (!g.inRun) return;
+  g.inRun = false;
+  g.state = "playing";
+}
+
+// A run that can be picked up again: paused, or waiting behind the menu.
+export function hasRun(g) {
+  return g.state === "paused" || (g.state === "menu" && g.inRun);
+}
+
+// A kept run as a JSON string, and back. Everything in the game state is
+// plain data, so a platform can store this to survive an app restart.
+const SAVE_VERSION = 1;
+export function saveRun(g) {
+  return JSON.stringify({ v: SAVE_VERSION, run: { ...g, state: "menu", inRun: true, events: freshEvents(), shake: 0 } });
+}
+export function loadRun(g, json) {
+  let saved;
+  try { saved = JSON.parse(json); } catch { return false; }
+  const run = saved && saved.v === SAVE_VERSION && saved.run;
+  if (!run || !run.player || !Array.isArray(run.zombies) || !Array.isArray(run.gates)) return false;
+  const best = Math.max(g.best, Number(run.best) || 0);
+  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best });
+  return true;
 }
 
 export function togglePause(g) {
@@ -145,33 +180,45 @@ export function buildWall(g) {
 function changeTroops(g, v) {
   g.player.troops = Math.max(1, Math.min(MAX_TROOPS, g.player.troops + v));
 }
+// Gate effects are plain data ({ label, color, type, v }) so a run can be saved.
+function applyGateEffect(g, e) {
+  if (e.type === "troops") changeTroops(g, e.v);
+  else if (e.type === "double") changeTroops(g, g.player.troops);
+  else if (e.type === "damage") g.player.damage++;
+  else if (e.type === "rate") g.player.fireRate = Math.min(8, g.player.fireRate * 1.2);
+  else if (e.type === "wall") buildWall(g);
+  else if (e.type === "weapon") {
+    g.player.weapon = e.v;
+    g.events.pickup = e.v;
+  }
+}
 function makeGateEffect(g, allowBad) {
   if (allowBad && Math.random() < 0.45) {
     const v = -(2 + Math.floor(Math.random() * 3));
-    return { label: v + " TROOPS", color: "#e0342f", bad: true, apply: () => changeTroops(g, v) };
+    return { label: v + " TROOPS", color: "#e0342f", bad: true, type: "troops", v };
   }
   const roll = Math.random();
   if (roll < 0.3) {
     const v = 2 + Math.floor(Math.random() * 4);
-    return { label: "+" + v + " TROOPS", color: "#2ecc5e", apply: () => changeTroops(g, v) };
+    return { label: "+" + v + " TROOPS", color: "#2ecc5e", type: "troops", v };
   } else if (roll < 0.48) {
-    return { label: "DMG +1", color: "#3b9bff", apply: () => { g.player.damage++; } };
+    return { label: "DMG +1", color: "#3b9bff", type: "damage" };
   } else if (roll < 0.66) {
     return {
       label: "FIRE RATE +",
       color: "#f5c211",
-      apply: () => { g.player.fireRate = Math.min(8, g.player.fireRate * 1.2); },
+      type: "rate",
     };
   } else if (roll < 0.78) {
-    return { label: "BUILD WALL", color: "#4dd0c4", apply: () => buildWall(g) };
+    return { label: "BUILD WALL", color: "#4dd0c4", type: "wall" };
   } else if (roll < 0.92) {
     // a different gun, offered right in the gate
     const keys = Object.keys(WEAPONS).filter((k) => k !== g.player.weapon);
     const k = keys[Math.floor(Math.random() * keys.length)];
     const w = WEAPONS[k];
-    return { label: w.label, color: w.color, apply: () => { g.player.weapon = k; g.events.pickup = k; } };
+    return { label: w.label, color: w.color, type: "weapon", v: k };
   }
-  return { label: "TROOPS x2", color: "#b46bff", apply: () => changeTroops(g, g.player.troops) };
+  return { label: "TROOPS x2", color: "#b46bff", type: "double" };
 }
 function spawnGatePair(g) {
   const a = makeGateEffect(g, false);
@@ -330,7 +377,7 @@ export function update(g, dt, saveBest) {
     if (!gate.used && gate.y >= PLAYER_Y - 4) {
       gate.used = true;
       const chosen = g.player.x < ROAD_MID ? gate.left : gate.right;
-      chosen.apply();
+      applyGateEffect(g, chosen);
       floatText(g, g.player.x, PLAYER_Y - 40, chosen.label, chosen.color);
       burst(g, g.player.x, PLAYER_Y - 20, chosen.color, 14);
       g.events.gate = chosen;
