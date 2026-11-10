@@ -36,7 +36,12 @@
     <li>Your score, the wave you reached, and how long the run lasted.</li>
     <li>For a daily challenge run, which day's challenge it was.</li>
   </ul>
-  <p>Your leaderboard name (for example, "SwiftOtter482") is generated automatically from the random ID. You can change it in the app, but only by picking words and a number from built-in lists: a name cannot be typed, so it cannot contain personal details. If you pick a name, it is sent to the server along with the random ID. After a game the app also asks the server for your current rank, using the random ID. Names, scores, and waves on the leaderboard are visible to everyone who plays. We do not store your IP address. The server runs on Cloudflare, which processes network requests on our behalf and may briefly keep standard request logs under <a href="https://www.cloudflare.com/privacypolicy/">its own privacy policy</a>.</p>
+  <p>Your leaderboard name (for example, "SwiftOtter482") is generated automatically from the random ID. You can change it in the app, but only by picking words and a number from built-in lists: a name cannot be typed, so it cannot contain personal details. If you pick a name, it is sent to the server along with the random ID. After a game the app also asks the server for your current rank, using the random ID. Names, scores, and waves on the leaderboard are visible to everyone who plays. The server runs on Cloudflare, which processes network requests on our behalf and may briefly keep standard request logs under <a href="https://www.cloudflare.com/privacypolicy/">its own privacy policy</a>.</p>
+  <p>We do not store your IP address. To keep the leaderboard from being flooded with fake entries, the server limits how many new players one network address can add:</p>
+  <ul>
+    <li>When a new player ID sends its first score, the server turns the IP address of the request into a short scrambled code, using a random key that changes every day, and counts how many new players that code has added that day. The code is too short to be turned back into an address: thousands of addresses share each code. Only the code and the count are kept, and they are deleted, together with the key, within a few hours of the end of the day (UTC).</li>
+    <li>Cloudflare counts how many requests an address sends within one minute, to block bursts. That count is held in memory and is gone after the minute.</li>
+  </ul>
   <p>Leaderboard entries are kept while the leaderboard is running. Because the ID is random and anonymous, we cannot tell which entry is yours unless you contact us with your leaderboard name; if you do, we will delete that entry.</p>
 
   <h2>Information stored on your device</h2>

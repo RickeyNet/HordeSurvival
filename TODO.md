@@ -35,7 +35,7 @@
 ## Technical
 - [x] Unit tests for `game/core.js` (wave scaling, gates, walls)
 - [x] Review leaderboard anti-cheat in `leaderboard/src/index.js` (request size cap and race-free score write added; follow-ups below)
-- [ ] Leaderboard: limit submissions per IP address (Cloudflare rate limiting); today anyone can invent unlimited player ids and fill the board
+- [x] Leaderboard: limit submissions per IP address without storing it (10 new player ids a day per address, counted under a short hash with a daily key, plus Cloudflare's rate limiter for bursts; needs migration `0006_ip_limits.sql`). Someone who rotates addresses (VPNs, proxies) still gets past it
 - [x] Leaderboard: lower the cap on run length in `plausible()` (now 2 hours, so a forged score tops out at 180,100 instead of about 2 million)
 - [x] Leaderboard: a way to remove a forged score and keep that player id from coming back (`npm run remove-score -- <name or id> --ban` in `leaderboard/`)
 - [x] Leaderboard: the `COUNT(*)` queries read one row per player on every view (ranks and totals now come from a `score_counts` table that triggers keep current: under 1,000 rows per view however many players; needs migration `0005_score_counts.sql`)

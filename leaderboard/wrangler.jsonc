@@ -7,6 +7,13 @@
   // Every day at 03:00 UTC: clear out weekly and daily board rows from
   // finished weeks and days.
   "triggers": { "crons": ["0 3 * * *"] },
+  // Stops bursts: at most 20 POST requests a minute from one network address
+  // (counted in memory at Cloudflare's edge, see "Limits per address" in
+  // src/index.js). namespace_id is any number not used by another limiter on
+  // the account.
+  "ratelimits": [
+    { "name": "SUBMIT_LIMIT", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

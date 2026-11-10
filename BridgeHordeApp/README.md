@@ -123,6 +123,8 @@ There are three boards: all-time bests, bests for the current week, and the dail
 
 Ranks and board sizes are not counted from the scores on each view. The database keeps a `score_counts` table (how many players hold each score, per board) and triggers update it on every change to the score tables, so a view reads under 1,000 rows however many players there are. Anything that changes scores with plain SQL, like `remove-score`, keeps the counts right without doing anything extra.
 
+Player ids are made up by the app, so the server also limits what one network address can do, without storing the address. An address can add 10 new player ids a day (`NEW_IDS_PER_DAY`); a player who already has an entry is never refused. The count is kept under 20 bits of a keyed hash of the address, which thousands of addresses share, and the key and the counts are deleted when the day is over. In front of that, Cloudflare's rate limiter (`ratelimits` in `wrangler.jsonc`) allows 20 POST requests a minute per address. An IPv6 address counts as its /64. A refused request gets a 429, and the app keeps the run and sends it again later. If you change what is kept, change `docs/privacy.html` too.
+
 `npm test` in `leaderboard/` runs the Worker's tests. It needs Node 22.13 or newer and no install.
 
 To take an entry off all three boards, run this in `leaderboard/`:

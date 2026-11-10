@@ -23,7 +23,8 @@
 // Players are anonymous: the app makes up a random id on first launch and the
 // server derives a display name from it. A player can pick another name, but
 // only one built from the word lists below, so nothing personal is ever sent
-// and there are no user-typed names to moderate. No IP addresses are stored.
+// and there are no user-typed names to moderate. No IP addresses are stored:
+// the limits per address below work without keeping the address.
 
 const WAVE_LEN = 18; // must match game/core.js
 const ID_RE = /^[0-9a-f]{32}$/;
@@ -103,7 +104,81 @@ export function plausible({ score, wave, elapsed }) {
   return score <= 25 * elapsed + 100;
 }
 
+// ---------- Limits per address ----------
+// Player ids are made up by the client, so the per-player cooldown does not
+// stop a script that invents a new id for every request. The address a
+// request comes from is the one thing it cannot make up, and two limits hang
+// on it. Neither stores the address.
+//
+// 1. Bursts: Cloudflare's rate limiter (the SUBMIT_LIMIT binding in
+//    wrangler.jsonc) counts the POST requests of an address for a minute, in
+//    memory at Cloudflare's edge.
+// 2. New player ids per day: counted in the database under a bucket, which is
+//    20 bits of HMAC(key of the day, address). About 4,000 IPv4 addresses
+//    share a bucket, so it cannot be turned back into one address, and the
+//    key and the counts are deleted when the day is over (migrations/0006).
+//
+// Only new ids are counted: a player who already has an entry is never
+// refused here. Many honest players can share an address (mobile carriers,
+// schools), so the cap is generous. A refusal is a 429, which the app
+// answers by keeping the run and sending it again later.
+export const NEW_IDS_PER_DAY = 10;
+const BUCKET_BITS = 20;
+
+// What the limits count as one address. An IPv6 customer usually has a whole
+// /64 to pick addresses from, so only that prefix counts.
+export function addressKey(ip) {
+  if (!ip.includes(":")) return ip;
+  const [head, tail] = ip.split("::");
+  const groups = head ? head.split(":") : [];
+  if (tail !== undefined) {
+    const rest = tail ? tail.split(":") : [];
+    while (groups.length + rest.length < 8) groups.push("0");
+    groups.push(...rest);
+  }
+  return groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(":");
+}
+
+// The address of the client, as Cloudflare saw it (a client cannot set this
+// header itself). Null when not running behind Cloudflare: no limits then.
+const addressOf = (request) => {
+  const ip = request.headers.get("cf-connecting-ip");
+  return ip ? addressKey(ip) : null;
+};
+
+async function bucketOf(salt, address) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode(salt), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, enc.encode(address)));
+  return ((mac[0] << 16) | (mac[1] << 8) | mac[2]) >> (24 - BUCKET_BITS);
+}
+
+// Count one more new player id for this address today. False if that would
+// be over the cap.
+async function countNewId(db, address, now) {
+  const day = dayOf(now);
+  let row = await db.prepare("SELECT salt FROM ip_salt WHERE day = ?").bind(day).first();
+  if (!row) {
+    // First submission of the day: yesterday's key and counts go, and the day
+    // gets a key of its own (if two requests race here, the first one's stays).
+    await db.prepare("DELETE FROM ip_salt WHERE day <> ?").bind(day).run();
+    await db.prepare("DELETE FROM ip_counts WHERE day <> ?").bind(day).run();
+    const salt = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
+    row = await db.prepare(
+      "INSERT INTO ip_salt (day, salt) VALUES (?1, ?2) ON CONFLICT (day) DO UPDATE SET salt = salt RETURNING salt"
+    ).bind(day, salt).first();
+  }
+  // One statement, so racing requests cannot get past the cap: at the cap
+  // nothing is updated and no row comes back.
+  const counted = await db.prepare(
+    `INSERT INTO ip_counts (day, bucket, n) VALUES (?1, ?2, 1)
+     ON CONFLICT (day, bucket) DO UPDATE SET n = n + 1 WHERE n < ?3 RETURNING n`
+  ).bind(day, await bucketOf(row.salt, address), NEW_IDS_PER_DAY).first();
+  return !!counted;
+}
+
 // ---------- Helpers ----------
+const tooMany = () => json({ error: "too many requests" }, 429);
 const json = (body, status = 200) =>
   new Response(JSON.stringify(body), {
     status,
@@ -175,7 +250,7 @@ async function standing(db, playerId, now) {
 }
 
 // ---------- Handlers ----------
-async function submit(request, env) {
+async function submit(request, env, address) {
   const { body, error } = await readJson(request);
   if (error) return error;
   const { playerId, score, wave, elapsed, name, daily } = body;
@@ -186,7 +261,8 @@ async function submit(request, env) {
 
   const now = Date.now();
   const existing = await env.DB.prepare("SELECT best, last_submit FROM players WHERE id = ?").bind(playerId).first();
-  if (existing && now - existing.last_submit < COOLDOWN_MS) return json({ error: "too many requests" }, 429);
+  if (existing && now - existing.last_submit < COOLDOWN_MS) return tooMany();
+  if (!existing && address && !(await countNewId(env.DB, address, now))) return tooMany();
 
   // One statement, so two submissions racing each other can neither fail on
   // the insert nor leave the lower score as the best. A banned id inserts
@@ -293,7 +369,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
-      if (request.method === "POST" && url.pathname === "/scores") return await submit(request, env);
+      const address = addressOf(request);
+      if (request.method === "POST" && address && env.SUBMIT_LIMIT) {
+        const { success } = await env.SUBMIT_LIMIT.limit({ key: address });
+        if (!success) return tooMany();
+      }
+      if (request.method === "POST" && url.pathname === "/scores") return await submit(request, env, address);
       if (request.method === "POST" && url.pathname === "/name") return await rename(request, env);
       if (request.method === "GET" && url.pathname === "/rank") return await rank(url, env);
       if (request.method === "GET" && url.pathname === "/leaderboard") return await leaderboard(url, env);
@@ -307,6 +388,7 @@ export default {
   // Cron (see wrangler.jsonc): drop weekly and daily rows from weeks and days
   // that are over, keeping the one that just ended. Their score counts go
   // first, so the triggers on the two tables find nothing left to count down.
+  // The key and counts of the limit per address go as soon as their day is over.
   async scheduled(_event, env) {
     const now = Date.now();
     const dropCounts = "DELETE FROM score_counts WHERE board = ? AND period < ?";
@@ -314,5 +396,7 @@ export default {
     await env.DB.prepare("DELETE FROM weekly WHERE week < ?").bind(weekOf(now) - 1).run();
     await env.DB.prepare(dropCounts).bind("day", dayOf(now) - 1).run();
     await env.DB.prepare("DELETE FROM daily WHERE day < ?").bind(dayOf(now) - 1).run();
+    await env.DB.prepare("DELETE FROM ip_salt WHERE day <> ?").bind(dayOf(now)).run();
+    await env.DB.prepare("DELETE FROM ip_counts WHERE day <> ?").bind(dayOf(now)).run();
   },
 };

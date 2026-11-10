@@ -6,7 +6,10 @@ import { test, beforeEach, afterEach, mock } from "node:test";
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import worker, { plausible, nameFor, validName, weekOf, weekEnd, dayOf, dayEnd, ADJECTIVES, ANIMALS, MAX_ELAPSED } from "../src/index.js";
+import worker, {
+  plausible, nameFor, validName, weekOf, weekEnd, dayOf, dayEnd, addressKey,
+  ADJECTIVES, ANIMALS, MAX_ELAPSED, NEW_IDS_PER_DAY,
+} from "../src/index.js";
 import * as appNames from "../../BridgeHordeApp/names.js";
 import * as core from "../../BridgeHordeApp/game/core.js";
 
@@ -45,8 +48,10 @@ beforeEach(() => {
 });
 afterEach(() => mock.restoreAll());
 
-async function call(method, path, body) {
+// `ip` is the address Cloudflare would report for the request (none unless given).
+async function call(method, path, body, ip) {
   const init = { method };
+  if (ip) init.headers = { "cf-connecting-ip": ip };
   if (body !== undefined) init.body = typeof body === "string" ? body : JSON.stringify(body);
   const res = await worker.fetch(new Request("https://board.test" + path, init), env);
   return { status: res.status, body: await res.json() };
@@ -615,6 +620,130 @@ test("renaming a player with no entry stores nothing", async () => {
   env.DB.sqlite.exec(`INSERT INTO banned (id, banned_at) VALUES ('${ID_B}', ${now})`);
   assert.equal((await submit(ID_B, { ...RUN, name: "IronYak7" })).status, 403);
   assert.equal((await board("?board=week")).body.total, 0);
+});
+
+// ---------- limits per address ----------
+const IP = "203.0.113.7";
+const newId = (i) => i.toString(16).padStart(32, "0");
+const submitFrom = (ip, playerId, run = RUN) => call("POST", "/scores", { playerId, ...run }, ip);
+const ipCounts = () => env.DB.sqlite.prepare("SELECT day, bucket, n FROM ip_counts").all();
+const salts = () => env.DB.sqlite.prepare("SELECT day, salt FROM ip_salt").all();
+
+test("an IPv6 address counts as its /64, an IPv4 address as itself", () => {
+  assert.equal(addressKey("203.0.113.7"), "203.0.113.7");
+  assert.equal(addressKey("2001:db8:12:3400:1:2:3:4"), "2001:db8:12:3400");
+  assert.equal(addressKey("2001:0DB8:0012:3400::9"), "2001:db8:12:3400");
+  assert.equal(addressKey("2001:db8::1"), "2001:db8:0:0");
+  assert.equal(addressKey("::1"), "0:0:0:0");
+});
+
+test("one address can add a limited number of new player ids a day", async () => {
+  for (let i = 0; i < NEW_IDS_PER_DAY; i++) assert.equal((await submitFrom(IP, newId(i))).status, 200, "id " + i);
+  const refused = await submitFrom(IP, newId(99));
+  assert.equal(refused.status, 429); // the app keeps the run and tries again later
+  assert.equal((await board()).body.total, NEW_IDS_PER_DAY);
+
+  // Other addresses are not affected, and neither are requests without one.
+  assert.equal((await submitFrom("198.51.100.1", newId(100))).status, 200);
+  assert.equal((await submit(newId(101))).status, 200);
+
+  // The next day the address can add ids again.
+  now += DAY_MS;
+  assert.equal((await submitFrom(IP, newId(99))).status, 200);
+});
+
+test("a player who already has an entry is never refused by the cap", async () => {
+  for (let i = 0; i < NEW_IDS_PER_DAY; i++) await submitFrom(IP, newId(i));
+  now += 60_000; // past the per-player cooldown
+  const res = await submitFrom(IP, newId(0), { score: 900, wave: 6, elapsed: 100 });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.all.best, 900);
+  assert.deepEqual(ipCounts().map((r) => r.n), [NEW_IDS_PER_DAY]); // and is not counted again
+});
+
+test("addresses in the same IPv6 /64 share one count", async () => {
+  for (let i = 0; i < NEW_IDS_PER_DAY; i++) await submitFrom("2001:db8:12:3400::" + (i + 1).toString(16), newId(i));
+  assert.equal((await submitFrom("2001:db8:12:3400:ffff::1", newId(50))).status, 429);
+  assert.equal((await submitFrom("2001:db8:12:3401::1", newId(50))).status, 200);
+});
+
+test("a refused request is not counted towards the cap", async () => {
+  assert.equal((await submitFrom(IP, newId(0), { ...RUN, score: 1e9 })).status, 422);
+  assert.equal((await submitFrom(IP, "nope")).status, 400);
+  assert.deepEqual(ipCounts(), []);
+});
+
+test("the address is not stored, only a count under a 20-bit bucket", async () => {
+  await submitFrom(IP, ID_A);
+  await submitFrom(IP, ID_B);
+  const [row, ...others] = ipCounts();
+  assert.deepEqual(others, []);
+  assert.equal(row.day, dayOf(now));
+  assert.equal(row.n, 2);
+  assert.ok(Number.isInteger(row.bucket) && row.bucket >= 0 && row.bucket < 2 ** 20);
+  assert.match(salts()[0].salt, /^[0-9a-f]{64}$/);
+
+  // Nothing in the database holds the address.
+  const { sqlite } = env.DB;
+  const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((t) => t.name);
+  assert.ok(tables.includes("ip_counts"));
+  for (const table of tables) {
+    assert.ok(!JSON.stringify(sqlite.prepare(`SELECT * FROM ${table}`).all()).includes(IP), table);
+  }
+});
+
+test("the bucket of an address changes with the key of the day", async () => {
+  // 30 days: the odds of the same 20-bit bucket every time are nil.
+  const buckets = new Set();
+  for (let i = 0; i < 30; i++) {
+    await submitFrom(IP, newId(i));
+    buckets.add(ipCounts()[0].bucket);
+    now += DAY_MS;
+  }
+  assert.ok(buckets.size > 1);
+});
+
+test("the key and the counts of a day are deleted when the day is over", async () => {
+  await submitFrom(IP, ID_A);
+  const [first] = salts();
+
+  // By the first new player of the next day...
+  now += DAY_MS;
+  await submitFrom(IP, ID_B);
+  assert.deepEqual(salts().map((r) => r.day), [dayOf(now)]);
+  assert.notEqual(salts()[0].salt, first.salt);
+  assert.deepEqual(ipCounts().map((r) => [r.day, r.n]), [[dayOf(now), 1]]);
+
+  // ...or, on a day without one, by the scheduled run.
+  now += DAY_MS;
+  await worker.scheduled({}, env);
+  assert.deepEqual(salts(), []);
+  assert.deepEqual(ipCounts(), []);
+});
+
+test("the scheduled run keeps the key and the counts of the current day", async () => {
+  await submitFrom(IP, ID_A);
+  await worker.scheduled({}, env);
+  assert.equal(salts().length, 1);
+  assert.equal(ipCounts().length, 1);
+});
+
+test("the burst limiter refuses POST requests per address before anything is stored", async () => {
+  const keys = [];
+  let success = true;
+  env.SUBMIT_LIMIT = { limit: async ({ key }) => (keys.push(key), { success }) };
+
+  assert.equal((await submitFrom(IP, ID_A)).status, 200);
+  success = false;
+  assert.equal((await submitFrom("2001:db8:12:3400::9", ID_B)).status, 429);
+  assert.equal((await call("POST", "/name", { playerId: ID_A, name: "BraveWolf7" }, IP)).status, 429);
+  assert.deepEqual(keys, [IP, "2001:db8:12:3400", IP]);
+  assert.equal((await board()).body.total, 1);
+
+  // Reading the board is not limited, and neither is a request without an address.
+  assert.equal((await call("GET", "/leaderboard", undefined, IP)).status, 200);
+  assert.equal((await submit(ID_C)).status, 200);
+  assert.equal(keys.length, 3);
 });
 
 // ---------- routing ----------
