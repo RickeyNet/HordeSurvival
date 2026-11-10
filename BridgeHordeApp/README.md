@@ -68,9 +68,23 @@ The leaderboard is off until `LEADERBOARD_URL` in `leaderboard.js` is set. To tu
 cd ../leaderboard
 npm install
 npm run deploy
+npm run db:migrate:remote
 ```
 
+`npm run deploy` creates the database on the first run and `npm run db:migrate:remote` creates its tables. Run the migrate step again after any deploy that adds a file to `leaderboard/migrations/`.
+
 Players are anonymous. The app makes up a random id on first launch and the server derives a display name from it.
+
+`npm test` in `leaderboard/` runs the Worker's tests. It needs Node 22.13 or newer and no install.
+
+To take an entry off the board, run this in `leaderboard/`:
+
+```sh
+npm run remove-score -- SwiftOtter482          # a player asked for their entry to be deleted
+npm run remove-score -- SwiftOtter482 --ban    # a forged score: also block that player id
+```
+
+Names are not unique. If several players share one, the command lists them and changes nothing until you run it again with the id of the one you mean. Add `--local` to act on the local dev database.
 
 ## Release builds
 

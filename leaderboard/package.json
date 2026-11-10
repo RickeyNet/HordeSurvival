@@ -6,9 +6,11 @@
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply horde-leaderboard --local",
     "db:migrate:remote": "wrangler d1 migrations apply horde-leaderboard --remote",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/*.test.js\"",
+    "remove-score": "node scripts/remove-score.js"
   },
-  "type": "commonjs",
+  "type": "module",
   "devDependencies": {
     "wrangler": "^4.158.0"
   },
