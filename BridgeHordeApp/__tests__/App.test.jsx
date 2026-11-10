@@ -263,7 +263,7 @@ test('upgrades: coins from a run buy a level, saved across a restart', async () 
   expect(g.upgrades.troops).toBe(1);
   expect(g.coins).toBe(3);
   expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({
-    v: 1, coins: 3, upgrades: { troops: 1, damage: 0, wall: 0 }, achieved: [], daily: { day: 0, best: 0 },
+    v: 1, coins: 3, upgrades: { troops: 1, damage: 0, wall: 0 }, achieved: [], daily: { day: 0, best: 0 }, env: 'bridge',
   });
   await app.tapBtn(BACK_BTN);
   // "restart the app": the upgrade is still there and the next run uses it
@@ -316,7 +316,7 @@ test('daily challenge: starts from the menu with the day as seed, retries as a d
   expect(haptics.trigger).toHaveBeenCalledTimes(1); // one buzz for the game over, none extra for the unlock
   const award = G.ACHIEVEMENTS.find((a) => a.id === 'daily');
   expect(JSON.parse(await AsyncStorage.getItem('hordeMeta'))).toEqual({
-    v: 1, coins: 4 + award.coins, upgrades: { troops: 0, damage: 0, wall: 0 }, achieved: ['daily'], daily: { day: today, best: 40 },
+    v: 1, coins: 4 + award.coins, upgrades: { troops: 0, damage: 0, wall: 0 }, achieved: ['daily'], daily: { day: today, best: 40 }, env: 'bridge',
   });
   // retry: another daily run, not an ordinary one
   await app.tap(G.W / 2, 60);
@@ -404,6 +404,55 @@ test('achievements: unlocked in a run, announced, saved, and listed on their scr
   await app.tapBtn(AWARDS_BACK_BTN);
   spy.mockRestore();
   load.mockRestore();
+  await ReactTestRenderer.act(() => {
+    jest.advanceTimersByTime(200);
+    app.tree.unmount();
+  });
+  jest.useRealTimers();
+});
+
+test('the map button changes the environment, which is drawn, saved, and used by the next run', async () => {
+  const AsyncStorage = require('@react-native-async-storage/async-storage').default;
+  jest.useFakeTimers();
+  let app = await mount();
+  const { G, MENU_BTNS, HOME_BTN } = app;
+  const spy = jest.spyOn(G, 'resetRun');
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  await app.tapBtn(MENU_BTNS.map); // the menu is now drawn over the frozen pass
+  expect(spy).not.toHaveBeenCalled();
+  expect(JSON.parse(await AsyncStorage.getItem('hordeMeta')).env).toBe('pass');
+  await app.tapBtn(MENU_BTNS.fight);
+  const g = spy.mock.calls[0][0];
+  expect(g.env).toBe('pass');
+  // one of everything new on the road, drawn for a few frames, frozen and not
+  const z = (kind, x) => ({
+    x, y: 300, kind, hp: 1e6, maxHp: 2e6, speed: 0, size: 13, boss: false, big: false,
+    troopCost: 1, scoreVal: 1, wob: 0, summonTimer: 0, cx: x, phase: 0, spitTimer: 99,
+  });
+  g.zombies.push(z('bomber', 80), z('weaver', 200), z('spitter', 320));
+  g.spits.push({ x: 300, y: 320, vx: 0, vy: 1 });
+  for (const type of Object.keys(G.POWERUPS)) g.drops.push({ x: 60, y: 200, type });
+  g.effects.rapid = 5;
+  g.effects.strike = 5;
+  g.zombieTimer = 1e9;
+  await app.tap(G.W / 2, 400);
+  g.effects.freeze = 3;
+  g.flash = 0.5;
+  await app.tap(G.W / 2, 400);
+  expect(g.state).toBe('playing');
+  // "restart the app": the pick is still there
+  await app.tap(G.PAUSE_BTN.x + 5, G.PAUSE_BTN.y + 5);
+  await app.tapBtn(HOME_BTN);
+  await ReactTestRenderer.act(() => { app.tree.unmount(); });
+  await AsyncStorage.removeItem('hordeRun');
+  app = await mount();
+  await ReactTestRenderer.act(async () => { await jest.advanceTimersByTimeAsync(50); });
+  await app.tapBtn(MENU_BTNS.fight);
+  const g2 = spy.mock.calls[1][0];
+  expect(g2).not.toBe(g);
+  expect(g2.envPick).toBe('pass');
+  expect(g2.env).toBe('pass');
+  spy.mockRestore();
   await ReactTestRenderer.act(() => {
     jest.advanceTimersByTime(200);
     app.tree.unmount();

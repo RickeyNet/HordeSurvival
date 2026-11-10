@@ -107,8 +107,10 @@ const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
 const half = (x, y, h) => ({ x, y, w: 172, h });
 // Main menu: the buttons that start a run, then two rows of two.
 const menuGrid = (y) => ({ shop: half(24, y, 54), awards: half(204, y, 54), board: half(24, y + 68, 54), settings: half(204, y + 68, 54) });
-const MENU_BTNS = { fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
-const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
+// The map button sits on its own at the top; clicking it changes the environment.
+const MAP_BTN = { x: 60, y: 96, w: G.W - 120, h: 52 };
+const MENU_BTNS = { map: MAP_BTN, fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
+const RUN_MENU_BTNS = { map: MAP_BTN, resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
 // Achievements screen: one row per entry in G.ACHIEVEMENTS.
 const AWARD_ROWS = G.ACHIEVEMENTS.map((a, i) => ({ ...a, x: 24, y: 112 + i * 41, w: G.W - 48, h: 37 }));
 const AWARDS_BACK_BTN = btn(G.H - 68, 48);
@@ -181,6 +183,7 @@ canvas.addEventListener("pointerdown", (e) => {
       if (game.inRun) { ui.confirmNew = start; click(); } // starting either kind would discard the waiting run
       else G.resetRun(game, start === "daily" ? today() : null);
     }
+    else if (hit(btns.map, wx, wy)) { G.cycleEnv(game); storeMeta(); click(); }
     else if (hit(btns.shop, wx, wy)) { ui.shop = true; click(); }
     else if (hit(btns.awards, wx, wy)) { ui.awards = true; click(); }
     else if (hit(btns.board, wx, wy)) { ui.board = true; click(); }
@@ -253,7 +256,7 @@ function initAudio() {
   if (audio && audio.state === "suspended") audio.resume();
 }
 
-// ---------- Scenery ----------
+// ---------- Scenery: sunset bridge ----------
 function drawSky() {
   const sky = ctx.createLinearGradient(0, 0, 0, HORIZON + 40);
   sky.addColorStop(0, "#131b33");
@@ -407,6 +410,131 @@ function drawBridge() {
   }
 }
 
+// ---------- Scenery: frozen pass (the second environment, see ENVS in game/core.js) ----------
+const MOON = { x: 96, y: 78 };
+const PEAKS_FAR = [[0, 150], [40, 120], [85, 160], [130, 105], [180, 150], [225, 95], [275, 145], [320, 112], [365, 150], [400, 128]];
+const PEAKS_NEAR = [[0, 172], [55, 150], [110, 178], [160, 158], [215, 180], [270, 152], [330, 176], [400, 156]];
+function poly(pts, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath(); ctx.fill();
+}
+function drawPassSky() {
+  const t = performance.now() / 1000;
+  const sky = ctx.createLinearGradient(0, 0, 0, HORIZON + 40);
+  sky.addColorStop(0, "#050816");
+  sky.addColorStop(0.6, "#0f1a38");
+  sky.addColorStop(1, "#2b3f68");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, G.W, HORIZON + 40);
+  // twinkling stars
+  ctx.fillStyle = "#fff";
+  for (let i = 0; i < 40; i++) {
+    ctx.globalAlpha = 0.45 + 0.35 * Math.sin(t * 1.5 + i * 1.7);
+    ctx.fillRect((i * 67) % G.W, (i * 41) % 150, 1.5, 1.5);
+  }
+  ctx.globalAlpha = 1;
+  // moon with glow
+  const glow = ctx.createRadialGradient(MOON.x, MOON.y, 4, MOON.x, MOON.y, 64);
+  glow.addColorStop(0, "rgba(200,220,255,0.55)");
+  glow.addColorStop(1, "rgba(200,220,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(MOON.x - 64, MOON.y - 64, 128, 128);
+  ctx.fillStyle = "#e8f0ff";
+  ctx.beginPath(); ctx.arc(MOON.x, MOON.y, 17, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#c9d6ea";
+  ctx.beginPath(); ctx.arc(MOON.x - 5, MOON.y - 3, 4, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(MOON.x + 6, MOON.y + 5, 2.5, 0, Math.PI * 2); ctx.fill();
+}
+function drawPassGround() {
+  poly([[0, HORIZON + 4], ...PEAKS_FAR, [G.W, HORIZON + 4]], "#16223f");
+  ctx.globalAlpha = 0.85;
+  for (const [x, y] of PEAKS_FAR) {
+    if (y > 125) continue; // only the tall ones carry snow
+    poly([[x, y], [x - 11, y + 13], [x - 4, y + 9], [x + 2, y + 14], [x + 11, y + 13]], "#c9d6e8");
+  }
+  ctx.globalAlpha = 1;
+  poly([[0, HORIZON + 4], ...PEAKS_NEAR, [G.W, HORIZON + 4]], "#22335a");
+  const snow = ctx.createLinearGradient(0, HORIZON, 0, G.H);
+  snow.addColorStop(0, "#4a5f85");
+  snow.addColorStop(0.35, "#8ea3c4");
+  snow.addColorStop(1, "#c9d6e8");
+  ctx.fillStyle = snow;
+  ctx.fillRect(0, HORIZON, G.W, G.H - HORIZON);
+}
+function drawPine(x, y, k) {
+  ctx.fillStyle = "#2a2118";
+  ctx.fillRect(x - 2 * k, y - 10 * k, 4 * k, 10 * k);
+  poly([[x - 15 * k, y - 8 * k], [x + 15 * k, y - 8 * k], [x, y - 44 * k]], "#173530");
+  poly([[x - 11 * k, y - 30 * k], [x + 11 * k, y - 30 * k], [x, y - 66 * k]], "#1d423b");
+  poly([[x - 5 * k, y - 50 * k], [x + 5 * k, y - 50 * k], [x, y - 66 * k]], "#dfe8f5");
+}
+function drawPassRoad() {
+  const nearS = 1.55;
+  const nl = G.W / 2 + (G.ROAD_L - G.ROAD_MID) * XS * nearS;
+  const nr = G.W / 2 + (G.ROAD_R - G.ROAD_MID) * XS * nearS;
+  const fl = roadEdge(1, "l"), fr = roadEdge(1, "r");
+  const road = ctx.createLinearGradient(0, HORIZON, 0, G.H);
+  road.addColorStop(0, "#3a4150");
+  road.addColorStop(1, "#262b35");
+  poly([[nl, G.H], [fl.x, fl.y], [fr.x, fr.y], [nr, G.H]], road);
+  // snow banks along both edges
+  poly([[nl, G.H], [fl.x, fl.y], [fl.x - 3, fl.y], [nl - 30, G.H]], "#e6eef8");
+  poly([[nr, G.H], [fr.x, fr.y], [fr.x + 3, fr.y], [nr + 30, G.H]], "#e6eef8");
+
+  for (let i = 0; i < 14; i++) {
+    const d0 = i / 14, d1 = d0 + 0.55 / 14;
+    const a = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d0));
+    const b = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d1));
+    poly([
+      [a.x - 2.6 * a.s, a.y], [a.x + 2.6 * a.s, a.y],
+      [b.x + 2.6 * b.s, b.y], [b.x - 2.6 * b.s, b.y],
+    ], "rgba(255,255,255,0.22)");
+  }
+
+  // pines and red-tipped snow poles, far to near
+  ctx.lineCap = "round";
+  for (let i = 0; i < 10; i++) {
+    const d = 0.92 - i * 0.1;
+    for (const side of ["l", "r"]) {
+      const e = roadEdge(d, side);
+      const out = side === "l" ? -1 : 1;
+      const off = 36 + ((i * 37 + (side === "l" ? 0 : 19)) % 50);
+      drawPine(e.x + out * off * e.s, e.y, e.s);
+      const px = e.x + out * 5 * e.s;
+      ctx.lineWidth = 2 * e.s;
+      ctx.strokeStyle = "#c9d3e0";
+      ctx.beginPath(); ctx.moveTo(px, e.y); ctx.lineTo(px, e.y - 22 * e.s); ctx.stroke();
+      ctx.strokeStyle = "#e0342f";
+      ctx.beginPath(); ctx.moveTo(px, e.y - 22 * e.s); ctx.lineTo(px, e.y - 28 * e.s); ctx.stroke();
+    }
+  }
+}
+function drawSnowfall() {
+  const t = performance.now() / 1000;
+  ctx.fillStyle = "#fff";
+  for (let i = 0; i < 46; i++) {
+    const x = (((i * 97 + t * (10 + (i % 5) * 5) + Math.sin(t + i) * 8) % G.W) + G.W) % G.W;
+    const y = (i * 131 + t * (45 + (i % 7) * 11)) % G.H;
+    ctx.globalAlpha = 0.35 + (i % 4) * 0.15;
+    ctx.beginPath(); ctx.arc(x, y, 1 + (i % 3) * 0.6, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// What to draw behind the actors, and in front of them, per environment.
+const SCENES = {
+  bridge: {
+    back: () => { drawSky(); drawWaterAndCity(); drawBridge(); },
+  },
+  pass: {
+    back: () => { drawPassSky(); drawPassGround(); drawPassRoad(); },
+    front: drawSnowfall,
+  },
+};
+
 // ---------- Actors ----------
 function shadow(px, py, w) {
   ctx.fillStyle = "rgba(0,0,0,0.3)";
@@ -421,16 +549,20 @@ const ZPAL = {
   brute:    { skin: "#c97a4a", shirt: "#6e3a1f" },
   summoner: { skin: "#b08ae0", shirt: "#4b2d73" },
   colossus: { skin: "#9aa7b3", shirt: "#4a5560" },
+  bomber:   { skin: "#d8a04a", shirt: "#7a2f1f" },
+  weaver:   { skin: "#7fd6c9", shirt: "#2c5a58" },
+  spitter:  { skin: "#c6d94a", shirt: "#4a5a1c" },
 };
+const ZICE = { skin: "#bfe6ff", shirt: "#6fa8d6", armor: "#8fbfe0" }; // any kind, while frozen
 
-function drawZombie(z) {
+function drawZombie(z, frozen) {
   const p = proj(z.x, z.y);
   const k = p.s * (z.size / 13) * ACTOR_SCALE;
   const wob = Math.sin(z.wob);
   ctx.globalAlpha = fogAlpha(z.y);
   shadow(p.x, p.y, 15 * k);
 
-  const pal = ZPAL[z.kind] || ZPAL.walker;
+  const pal = frozen ? ZICE : ZPAL[z.kind] || ZPAL.walker;
   const skin = pal.skin;
   const shirt = pal.shirt;
   const pants = "#2e3440";
@@ -467,6 +599,15 @@ function drawZombie(z) {
   if (z.kind === "tank") {
     ctx.fillStyle = pal.armor;
     ctx.fillRect(p.x - 8 * k, p.y - 38 * k, 16 * k, 14 * k);
+  } else if (z.kind === "bomber") {
+    // swollen, glowing belly
+    ctx.fillStyle = frozen ? "#8fbfe0" : "#ff6a3c";
+    ctx.beginPath(); ctx.arc(p.x, p.y - 27 * k, (8.5 + Math.sin(z.wob * 1.5) * 1.5) * k, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = frozen ? "#dff2ff" : "#ffd27a";
+    ctx.beginPath(); ctx.arc(p.x, p.y - 27 * k, 4 * k, 0, Math.PI * 2); ctx.fill();
+  } else if (z.kind === "weaver") {
+    ctx.fillStyle = "#e8f0ff";
+    ctx.fillRect(p.x - 10 * k, p.y - 33 * k, 20 * k, 3 * k);
   }
 
   // head with face - it's looking AT you (bosses get glowing red eyes)
@@ -476,8 +617,13 @@ function drawZombie(z) {
   ctx.fillStyle = z.boss ? "#e02020" : "#1d2410";
   ctx.beginPath(); ctx.arc(p.x - 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
   ctx.beginPath(); ctx.arc(p.x + 3 * k, hy - 1.5 * k, 1.6 * k, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = "#1d2410";
-  ctx.fillRect(p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k); // snarl
+  if (z.kind === "spitter") {
+    ctx.fillStyle = frozen ? "#dff2ff" : "#b6e33c"; // mouth full of acid
+    ctx.beginPath(); ctx.arc(p.x, hy + 3.5 * k, 3 * k, 0, Math.PI * 2); ctx.fill();
+  } else {
+    ctx.fillStyle = "#1d2410";
+    ctx.fillRect(p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k); // snarl
+  }
 
   // HP bar
   if (z.hp < z.maxHp || z.big) {
@@ -587,6 +733,66 @@ function drawBullet(b) {
 }
 
 
+// Acid lobbed by a spitter.
+function drawSpit(sp) {
+  const p = proj(sp.x, sp.y);
+  ctx.globalAlpha = fogAlpha(sp.y);
+  shadow(p.x, p.y, 8 * p.s);
+  ctx.fillStyle = "#b6e33c";
+  ctx.beginPath(); ctx.arc(p.x, p.y - 26 * p.s, 8 * p.s, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "#e6ff8a";
+  ctx.beginPath(); ctx.arc(p.x - 2.5 * p.s, p.y - 28.5 * p.s, 3 * p.s, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = 1;
+}
+
+// A power-up crate (see POWERUPS in game/core.js).
+function drawDrop(d) {
+  const p = proj(d.x, d.y);
+  const k = p.s * ACTOR_SCALE;
+  const fog = fogAlpha(d.y);
+  const pu = G.POWERUPS[d.type];
+  const cy = p.y - 16 * k;
+  ctx.globalAlpha = fog;
+  shadow(p.x, p.y, 14 * k);
+  ctx.globalAlpha = 0.22 * fog;
+  ctx.fillStyle = pu.color;
+  ctx.beginPath(); ctx.arc(p.x, cy, 22 * k, 0, Math.PI * 2); ctx.fill();
+  ctx.globalAlpha = fog;
+  ctx.fillStyle = "#1a2230";
+  ctx.strokeStyle = pu.color;
+  ctx.lineWidth = 2.5 * k;
+  ctx.beginPath(); ctx.roundRect(p.x - 13 * k, cy - 12 * k, 26 * k, 24 * k, 4 * k); ctx.fill(); ctx.stroke();
+  ctx.lineWidth = 2.2 * k;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  if (d.type === "freeze") {
+    // snowflake
+    for (let i = 0; i < 3; i++) {
+      const a = (i * Math.PI) / 3;
+      ctx.moveTo(p.x - Math.cos(a) * 8 * k, cy - Math.sin(a) * 8 * k);
+      ctx.lineTo(p.x + Math.cos(a) * 8 * k, cy + Math.sin(a) * 8 * k);
+    }
+  } else if (d.type === "airstrike") {
+    // falling bomb
+    poly([[p.x - 6 * k, cy - 7 * k], [p.x + 6 * k, cy - 7 * k], [p.x, cy + 8 * k]], pu.color);
+    ctx.beginPath();
+    ctx.moveTo(p.x - 6 * k, cy - 9 * k); ctx.lineTo(p.x + 6 * k, cy - 9 * k);
+  } else {
+    // chevrons: faster
+    for (const dy of [-5, 2]) {
+      ctx.moveTo(p.x - 6 * k, cy + (dy + 5) * k);
+      ctx.lineTo(p.x, cy + dy * k);
+      ctx.lineTo(p.x + 6 * k, cy + (dy + 5) * k);
+    }
+  }
+  ctx.stroke();
+  ctx.fillStyle = pu.color;
+  ctx.font = "bold " + Math.max(7, 22 * p.s * 0.62) + "px system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(pu.label, p.x, cy - 20 * k);
+  ctx.globalAlpha = 1;
+}
+
 // ---------- Walls / HUD ----------
 function drawWall(w) {
   const a = proj(G.ROAD_L + 6, w.y), b = proj(G.ROAD_R - 6, w.y);
@@ -638,6 +844,23 @@ function drawHUD() {
   );
   if (game.daily !== null) centerText("DAILY CHALLENGE", G.H - 36, "13", DAILY_COLOR);
 }
+// Running power-ups, as shrinking bars under the top bar.
+function drawEffects() {
+  const fx = game.effects;
+  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike]].filter((e) => e[1] > 0);
+  const w = 112, h = 20, gap = 8;
+  let x = G.W / 2 - (on.length * (w + gap) - gap) / 2;
+  for (const [key, left] of on) {
+    const pu = G.POWERUPS[key];
+    panel(x, 134, w, h, 6, "rgba(5,8,14,0.75)");
+    ctx.globalAlpha = 0.45;
+    panel(x, 134, w * Math.min(1, left / pu.time), h, 6, pu.color);
+    ctx.globalAlpha = 1;
+    label(pu.label, x + w / 2, 149, "13", "#fff");
+    x += w + gap;
+  }
+}
+
 // ---------- Menus and overlays (mirrors App.jsx) ----------
 const FONT = "px system-ui, sans-serif";
 function label(str, x, y, font, color, align = "center") {
@@ -695,8 +918,20 @@ function drawDailyButton(b) {
   centerText(played ? "Your best today: " + d.best : "One run a day, the same for everyone", b.y + 44, "13", "#c8d3e0");
 }
 
+// The environment for the next ordinary run; clicking moves on to the next one.
+function drawMapButton(b) {
+  const env = G.ENVS[game.envPick] || G.ENVS.bridge;
+  panel(b.x, b.y, b.w, b.h, 12, "rgba(5,8,14,0.55)");
+  ctx.strokeStyle = "#9fd4ff";
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(b.x, b.y, b.w, b.h, 12); ctx.stroke();
+  centerText("MAP: " + env.label, b.y + 23, "bold 16", "#9fd4ff");
+  centerText(env.desc + "  -  tap to change", b.y + 42, "13", "#c8d3e0");
+}
+
 function drawMenu() {
   dim("rgba(0,0,0,0.6)");
+  drawMapButton(MAP_BTN);
   centerText("HORDE SURVIVAL", 208, "bold 40", "#fff");
   drawCoins(G.W / 2, 286, game.coins, "21", 21, "#f5c211");
   const btns = game.inRun ? RUN_MENU_BTNS : MENU_BTNS;
@@ -705,7 +940,7 @@ function drawMenu() {
     drawButton(btns.resume, "RESUME", true);
     drawButton(btns.fight, "NEW RUN");
   } else {
-    centerText(game.best > 0 ? "Best: " + game.best : "Hold the bridge.", 252, "21", "#9fd4ff");
+    centerText(game.best > 0 ? "Best: " + game.best : game.envPick === "pass" ? "Hold the pass." : "Hold the bridge.", 252, "21", "#9fd4ff");
     drawButton(btns.fight, "FIGHT HORDE", true);
     centerText("Drag to move - you fire automatically", 618, "16", "#c8d3e0");
     centerText("Steer into gates - avoid the red ones!", 642, "16", "#c8d3e0");
@@ -877,20 +1112,24 @@ function draw() {
   ctx.save();
   if (game.shake > 0 && settings.shake) ctx.translate((Math.random() - 0.5) * game.shake, (Math.random() - 0.5) * game.shake);
 
-  drawSky();
-  drawWaterAndCity();
-  drawBridge();
+  const scene = SCENES[G.sceneEnv(game)];
+  scene.back();
 
   // everything on the road, far to near
+  const frozen = game.effects.freeze > 0;
   const actors = [
     ...game.gates.map((g) => ({ y: g.y, kind: "gate", ref: g })),
     ...game.zombies.map((z) => ({ y: z.y, kind: "zombie", ref: z })),
     ...game.walls.map((w) => ({ y: w.y, kind: "wall", ref: w })),
+    ...game.drops.map((d) => ({ y: d.y, kind: "drop", ref: d })),
+    ...game.spits.map((sp) => ({ y: sp.y, kind: "spit", ref: sp })),
   ].sort((a, b) => a.y - b.y);
   for (const a of actors) {
     if (a.kind === "gate") drawGate(a.ref);
     else if (a.kind === "wall") drawWall(a.ref);
-    else drawZombie(a.ref);
+    else if (a.kind === "drop") drawDrop(a.ref);
+    else if (a.kind === "spit") drawSpit(a.ref);
+    else drawZombie(a.ref, frozen);
   }
 
   for (const b of game.bullets) drawBullet(b);
@@ -916,6 +1155,16 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 
+  if (scene.front) scene.front();
+  if (frozen) { // cold haze over the road
+    ctx.fillStyle = "rgba(127,212,255,0.1)";
+    ctx.fillRect(0, HORIZON, G.W, G.H - HORIZON);
+  }
+  if (game.flash > 0) { // airstrike
+    ctx.fillStyle = "rgba(255,255,255," + game.flash * 0.7 + ")";
+    ctx.fillRect(0, 0, G.W, G.H);
+  }
+
   // wave / boss announcement banner
   if (game.banner.life > 0) {
     ctx.globalAlpha = Math.min(1, game.banner.life);
@@ -930,6 +1179,7 @@ function draw() {
   }
 
   drawHUD();
+  drawEffects();
   const hint = tutorialHint();
   if (hint) drawHint(hint);
   ctx.restore();

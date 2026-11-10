@@ -1,6 +1,6 @@
 # Horde Survival
 
-A mobile game where your squad holds a bridge against waves of zombies. The squad fires on its own; you drag left and right to aim it and to steer into gates that add troops, damage, fire rate, walls or a new weapon. Every third wave brings a boss. The run ends when the last soldier falls, and pays out coins that buy permanent upgrades: a bigger starting squad, more starting damage, stronger walls. A daily challenge gives everyone the same run for a day, with its own leaderboard, and achievements mark milestones along the way.
+A mobile game where your squad holds a bridge against waves of zombies. The squad fires on its own; you drag left and right to aim it and to steer into gates that add troops, damage, fire rate, walls or a new weapon, and into crates that give a short power-up. Every third wave brings a boss. There are two maps to play on. The run ends when the last soldier falls, and pays out coins that buy permanent upgrades: a bigger starting squad, more starting damage, stronger walls. A daily challenge gives everyone the same run for a day, with its own leaderboard, and achievements mark milestones along the way.
 
 Built with React Native and drawn with [React Native Skia](https://shopify.github.io/react-native-skia/). The project and package are named `BridgeHorde`; the name players see is "Horde Survival".
 
@@ -61,20 +61,40 @@ npm run lint
 
 The app tests run the real Skia drawing code through CanvasKit, so they catch drawing errors as well as logic errors.
 
+## Enemies, power-ups and maps
+
+All three are catalogs at the top of `game/core.js`; the numbers are first guesses, to be tuned from playtests.
+
+**Enemies** (`KIND_STATS`). Next to walkers, runners, tanks and the three bosses:
+
+- **Bomber** (from wave 4): bursts when shot and hurts the zombies around it, so one bomber can set off the next. One that reaches a wall blows 40% out of it and is gone; one that reaches the squad costs two soldiers.
+- **Weaver** (from wave 6): fast and frail, sways from side to side as it comes.
+- **Spitter** (from wave 8): stops well short of the squad and lobs acid at the spot where the squad stands at that moment. Moving away dodges it; standing still costs a soldier. At most three are on the road at once.
+
+**Power-ups** (`POWERUPS`). A crate comes down the road every 14 to 22 seconds; steer the squad into it to take it.
+
+- **Freeze**: the horde and its acid stand still for 4 seconds and nothing new arrives. The wave clock keeps running, which the leaderboard's check on run length relies on.
+- **Airstrike**: lands 0.7 seconds later, kills everything on the road and takes 35% of full health off a boss.
+- **Rapid fire**: twice the rate of fire for 6 seconds.
+
+**Maps** (`ENVS`). The Map button on the main menu switches between the Sunset Bridge and the Frozen Pass; the pick is kept on the device. On the pass zombies are 15% slower and have 25% more health. A daily challenge ignores the pick: its map follows from the day, so it is the same for everyone. All maps share the leaderboards.
+
+To add a map, add an entry to `ENVS` and a scene for it to `SCENES` in both `App.jsx` and `web/dev.html` (what to draw behind the actors, and optionally in front of them). To add an enemy kind, add it to `KIND_STATS`, give it a share of the spawn roll in `update`, and a palette in `ZPAL` in both renderers.
+
 ## Coins and upgrades
 
 A run pays coins when it ends: one per 10 points plus two per wave cleared (`coinsFor` in `game/core.js`). The Upgrades screen on the main menu spends them. Prices and top levels are the `costs` lists in `UPGRADES`, also in `game/core.js`. Leaving a run unfinished and starting a new one pays nothing for the old run.
 
 ## Daily challenge
 
-The Daily Challenge button on the main menu starts a run whose gates and horde come from a seed fixed by the date, so every player gets the same ones that day. The day is the UTC day (`dayOf` in `game/core.js`), so the challenge changes at 00:00 UTC everywhere. It can be played as often as you like; the best score of the day counts.
+The Daily Challenge button on the main menu starts a run whose gates and horde come from a seed fixed by the date, so every player gets the same ones that day, on the same map. The day is the UTC day (`dayOf` in `game/core.js`), so the challenge changes at 00:00 UTC everywhere. It can be played as often as you like; the best score of the day counts.
 
 Two things differ from an ordinary run:
 
 - Bought upgrades are left out, so everyone starts from the same squad. The run still pays coins.
 - The score also goes on the day's own leaderboard (the Today tab). It counts for the best score and the other two boards like any run.
 
-The seed fixes what comes down the bridge, not how it goes: the gates always arrive in the same order, and so do the zombies, but zombie health follows the squad's firepower and a boss on the bridge slows the spawns, as in any run. The gates, the horde and the walkers a summoner raises each have their own random stream (`rand` in `game/core.js`), so one never shifts another.
+The seed fixes what comes down the bridge, not how it goes: the gates always arrive in the same order, and so do the zombies, but zombie health follows the squad's firepower and a boss on the bridge slows the spawns, as in any run. The gates, the horde, the walkers a summoner raises and the power-up crates each have their own random stream (`rand` in `game/core.js`), so one never shifts another.
 
 ## Achievements
 
@@ -121,4 +141,4 @@ The version lives in three places that should be kept in step: `package.json`, `
 
 ## Data kept on the device
 
-Best score, coins and upgrades, achievements, the best daily challenge score, settings, an unfinished run, the anonymous player id and scores waiting to be sent are stored with AsyncStorage. Nothing else is collected.
+Best score, coins and upgrades, achievements, the best daily challenge score, the picked map, settings, an unfinished run, the anonymous player id and scores waiting to be sent are stored with AsyncStorage. Nothing else is collected.

@@ -431,6 +431,331 @@ describe('combat', () => {
   });
 });
 
+describe('newer enemy kinds', () => {
+  const bullet = (over = {}) => ({ x: G.ROAD_MID, y: 100, dmg: 1, vx: 0, pierce: 0, aoe: 0, wkey: 'rifle', ...over });
+  const quiet = (over) => run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9, dropTimer: 1e9, ...over });
+  const spawned = (wave, roll, zombies = []) => {
+    random(roll);
+    const g = run({ wave, zombieTimer: 0, gateTimer: 1e9, zombies });
+    G.update(g, 0);
+    jest.restoreAllMocks();
+    return g.zombies[g.zombies.length - 1];
+  };
+
+  test('bombers arrive at wave 4, weavers at wave 6, spitters at wave 8', () => {
+    // highest roll: the newest kind available
+    expect(spawned(3, 0.999).kind).toBe('walker');
+    expect(spawned(4, 0.999).kind).toBe('bomber');
+    expect(spawned(6, 0.999).kind).toBe('weaver');
+    expect(spawned(8, 0.999).kind).toBe('spitter');
+    expect(spawned(8, 0.93).kind).toBe('weaver');
+    expect(spawned(8, 0.86).kind).toBe('bomber');
+    expect(spawned(8, 0.5).kind).toBe('walker');
+  });
+
+  test('no more spitters than the limit are on the road at once', () => {
+    const full = Array.from({ length: G.MAX_SPITTERS }, () => zombie({ kind: 'spitter', spitTimer: 99 }));
+    expect(spawned(8, 0.999, full).kind).toBe('weaver');
+    expect(spawned(8, 0.999, full.slice(1)).kind).toBe('spitter');
+  });
+
+  test('a shot bomber takes its neighbours with it, and sets off other bombers', () => {
+    const g = quiet();
+    const bomber = zombie({ kind: 'bomber', hp: 1, maxHp: 10 });
+    const near = zombie({ x: G.ROAD_MID + 30, hp: 20 });
+    const chain = zombie({ kind: 'bomber', x: G.ROAD_MID - 40, hp: 15, maxHp: 15 });
+    const next = zombie({ x: G.ROAD_MID - 80, hp: 30 }); // only the second blast reaches it
+    const far = zombie({ x: G.ROAD_MID + 100, hp: 20 });
+    g.zombies.push(bomber, near, chain, next, far);
+    g.bullets.push(bullet());
+    G.update(g, 0);
+    expect(g.events.boom).toBe(true);
+    expect(g.kills).toBe(4);
+    expect(g.zombies).toEqual([far]);
+    expect(far.hp).toBe(20);
+  });
+
+  test('a bomber blows a chunk out of the wall it reaches, and scores nothing', () => {
+    const g = quiet({ wave: 1 });
+    G.buildWall(g);
+    const wall = g.walls[0];
+    g.zombies.push(zombie({ kind: 'bomber', y: wall.y - 8, speed: 100 }));
+    G.update(g, 0.05);
+    expect(wall.hp).toBeCloseTo(wall.maxHp * (1 - G.BOMB_WALL));
+    expect(g.zombies).toHaveLength(0);
+    expect(g.events.boom).toBe(true);
+    expect(g.kills).toBe(0);
+    expect(g.score).toBe(0);
+    // enough of them bring it down
+    g.zombies.push(zombie({ kind: 'bomber', y: wall.y - 8, speed: 100 }), zombie({ kind: 'bomber', y: wall.y - 8, speed: 100 }));
+    G.update(g, 0.05);
+    expect(g.walls).toHaveLength(0);
+    expect(g.events.wallDown).toBe(true);
+  });
+
+  test('a weaver sways across the road and stays on it', () => {
+    random(0.99); // spawns hard against the right rail
+    const g = run({ wave: 6, zombieTimer: 0, gateTimer: 1e9, fireTimer: 1e9, dropTimer: 1e9 });
+    G.update(g, 0);
+    jest.restoreAllMocks();
+    const w = g.zombies[0];
+    expect(w.kind).toBe('weaver');
+    g.zombieTimer = 1e9;
+    let min = Infinity, max = -Infinity;
+    for (let t = 0; t < 3; t += 0.05) {
+      G.update(g, 0.05);
+      min = Math.min(min, w.x);
+      max = Math.max(max, w.x);
+    }
+    expect(max - min).toBeGreaterThan(G.WEAVE * 1.8);
+    expect(min).toBeGreaterThanOrEqual(G.ROAD_L + 20 - 0.001);
+    expect(max).toBeLessThanOrEqual(G.ROAD_R - 20 + 0.001);
+  });
+
+  test('a spitter stops short of the squad and spits at where it stands', () => {
+    const g = quiet();
+    g.player.troops = 3;
+    g.player.x = 100;
+    const s = zombie({ kind: 'spitter', x: 300, y: G.SPIT_HOLD - 2, speed: 60, spitTimer: 0.01 });
+    g.zombies.push(s);
+    G.update(g, 0.05);
+    expect(s.y).toBe(G.SPIT_HOLD);
+    expect(g.events.spit).toBe(true);
+    expect(g.spits).toHaveLength(1);
+    expect(g.spits[0].vx).toBeLessThan(0); // towards the squad, on its left
+    G.update(g, 0.05);
+    expect(s.y).toBe(G.SPIT_HOLD);
+    expect(g.spits).toHaveLength(1); // the next one is SPIT_EVERY away
+    // the squad stays put: the acid lands on it
+    s.spitTimer = 99;
+    let lost = false;
+    for (let t = 0; t < 2 && !lost; t += 0.05) {
+      G.update(g, 0.05);
+      lost = g.events.troopLost;
+    }
+    expect(lost).toBe(true);
+    expect(g.player.troops).toBe(2);
+    expect(g.hits).toBe(1);
+    expect(g.spits).toHaveLength(0);
+  });
+
+  test('acid misses a squad that has moved on, and the last soldier lost to it ends the run', () => {
+    const g = quiet();
+    g.player.x = 100;
+    g.spits.push({ x: 300, y: G.PLAYER_Y - 9, vx: 0, vy: 100 });
+    G.update(g, 0.05);
+    expect(g.spits).toHaveLength(0);
+    expect(g.player.troops).toBe(1);
+    expect(g.events.troopLost).toBe(false);
+    g.spits.push({ x: 100, y: G.PLAYER_Y - 9, vx: 0, vy: 100 });
+    G.update(g, 0.05);
+    expect(g.state).toBe('gameover');
+  });
+});
+
+describe('power-ups', () => {
+  const quiet = (over) => run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9, dropTimer: 1e9, ...over });
+  const crate = (type, x = G.ROAD_MID) => ({ x, y: G.PLAYER_Y - 5, type });
+
+  test('a crate arrives after a while, with one of the known power-ups', () => {
+    const g = run({ zombieTimer: 1e9, gateTimer: 1e9 });
+    g.player.x = G.ROAD_L; // out of every crate's way
+    const seen = [];
+    for (let t = 0; t < 120; t += 0.05) {
+      if (g.dropTimer <= 0.05) seen.push(t);
+      G.update(g, 0.05);
+      g.waveTimer = 1e9;
+    }
+    expect(seen[0]).toBeGreaterThan(15);
+    expect(seen.length).toBeGreaterThanOrEqual(5);
+    expect(seen.length).toBeLessThanOrEqual(8);
+    for (const d of g.drops) expect(G.POWERUPS[d.type]).toBeDefined();
+  });
+
+  test('a crate is taken by standing in its way, and missed otherwise', () => {
+    const g = quiet();
+    g.drops.push(crate('freeze', G.ROAD_MID + 100));
+    G.update(g, 0.05);
+    expect(g.events.power).toBeNull();
+    expect(g.drops).toHaveLength(1);
+    g.player.x = G.ROAD_MID + 100; // slid under it just in time
+    G.update(g, 0.05);
+    expect(g.events.power).toBe('freeze');
+    expect(g.drops).toHaveLength(0);
+    expect(g.effects.freeze).toBe(G.POWERUPS.freeze.time);
+    G.update(g, 0.05);
+    expect(g.events.power).toBeNull();
+    // a missed one leaves at the bottom
+    g.drops.push(crate('rapid', G.ROAD_L + 30));
+    for (let t = 0; t < 3; t += 0.05) G.update(g, 0.05);
+    expect(g.drops).toHaveLength(0);
+    expect(g.effects.rapid).toBe(0);
+  });
+
+  test('freeze holds the horde, its acid and new arrivals still, but not the wave clock', () => {
+    const g = quiet({ zombieTimer: 0.5 });
+    const z = zombie({ y: 100, speed: 50 });
+    const s = zombie({ kind: 'spitter', y: 200, speed: 50, spitTimer: 0.01 });
+    g.zombies.push(z, s);
+    g.spits.push({ x: 300, y: 300, vx: 0, vy: 100 });
+    g.effects.freeze = 1;
+    const wave = g.waveTimer;
+    for (let t = 0; t < 0.9; t += 0.05) G.update(g, 0.05);
+    expect(z.y).toBe(100);
+    expect(g.spits).toEqual([{ x: 300, y: 300, vx: 0, vy: 100 }]);
+    expect(g.zombies).toHaveLength(2);
+    expect(g.zombieTimer).toBe(0.5);
+    expect(g.waveTimer).toBeLessThan(wave);
+    // and then it thaws
+    for (let t = 0; t < 0.3; t += 0.05) G.update(g, 0.05);
+    expect(g.effects.freeze).toBe(0);
+    expect(z.y).toBeGreaterThan(100);
+    expect(g.spits.length).toBe(2);
+  });
+
+  test('rapid fire doubles the rate of fire while it lasts', () => {
+    const volleys = (rapid) => {
+      const g = quiet({ fireTimer: 0 });
+      g.effects.rapid = rapid;
+      let n = 0;
+      for (let t = 0; t < 2; t += 0.01) {
+        G.update(g, 0.01);
+        if (g.events.shot) n++;
+      }
+      return n;
+    };
+    expect(volleys(10)).toBeGreaterThanOrEqual(volleys(0) * 2 - 1);
+    expect(volleys(0)).toBe(5);
+  });
+
+  test('an airstrike lands after a moment: the horde dies, a boss is hurt', () => {
+    const g = quiet();
+    const boss = zombie({ kind: 'brute', boss: true, big: true, hp: 100, maxHp: 100, scoreVal: 25 });
+    const offRoad = zombie({ y: -30, hp: 5 }); // not on the road yet
+    g.zombies.push(zombie({ hp: 500 }), zombie({ kind: 'tank', big: true, hp: 900, scoreVal: 4 }), boss, offRoad);
+    g.spits.push({ x: 300, y: 300, vx: 0, vy: 100 });
+    g.drops.push(crate('airstrike'));
+    G.update(g, 0.05);
+    expect(g.events.power).toBe('airstrike');
+    expect(g.kills).toBe(0);
+    for (let t = 0; t < G.POWERUPS.airstrike.time - 0.1; t += 0.05) G.update(g, 0.05);
+    expect(g.kills).toBe(0);
+    let boom = false;
+    for (let t = 0; t < 0.2; t += 0.05) {
+      G.update(g, 0.05);
+      boom = boom || g.events.boom;
+    }
+    expect(boom).toBe(true);
+    expect(g.kills).toBe(2);
+    expect(g.score).toBe(5);
+    expect(boss.hp).toBe(100 - 100 * G.STRIKE_BOSS);
+    expect(offRoad.hp).toBe(5);
+    expect(g.spits).toHaveLength(0);
+    expect(g.flash).toBeGreaterThan(0);
+    expect(g.achieved).toEqual({});
+  });
+
+  test('a boss finished off by an airstrike counts as a boss kill, not a rifle one', () => {
+    const g = quiet();
+    g.zombies.push(zombie({ kind: 'brute', boss: true, big: true, hp: 10, maxHp: 100, scoreVal: 25 }));
+    g.effects.strike = 0.01;
+    G.update(g, 0.05);
+    expect(g.achieved).toEqual({ boss: true });
+  });
+
+  test('a saved run keeps its crates and running effects', () => {
+    const g = quiet();
+    g.drops.push({ x: 100, y: 50, type: 'rapid' });
+    g.effects.freeze = 2.5;
+    G.togglePause(g);
+    const fresh = G.newGame();
+    expect(G.loadRun(fresh, G.saveRun(g))).toBe(true);
+    expect(fresh.drops).toEqual([{ x: 100, y: 50, type: 'rapid' }]);
+    expect(fresh.effects.freeze).toBe(2.5);
+  });
+});
+
+describe('environments', () => {
+  test('the menu cycles through them; a new run uses the picked one and keeps the pick', () => {
+    const g = G.newGame();
+    expect(g.envPick).toBe('bridge');
+    expect(G.sceneEnv(g)).toBe('bridge');
+    G.cycleEnv(g);
+    expect(g.envPick).toBe('pass');
+    expect(G.sceneEnv(g)).toBe('pass'); // the bare menu previews the pick
+    G.resetRun(g);
+    expect(g.env).toBe('pass');
+    G.togglePause(g);
+    G.toMenu(g);
+    G.cycleEnv(g);
+    expect(g.envPick).toBe('bridge');
+    expect(G.sceneEnv(g)).toBe('pass'); // a waiting run shows where it is
+    G.resetRun(g);
+    expect(g.env).toBe('bridge');
+    expect(g.envPick).toBe('bridge');
+    G.cycleEnv(g);
+    g.state = 'gameover';
+    G.toMenu(g);
+    expect(g.envPick).toBe('pass');
+  });
+
+  test('the frozen pass slows the horde and toughens it', () => {
+    const walker = (env) => {
+      random(0.5);
+      const g = G.newGame();
+      g.envPick = env;
+      G.resetRun(g);
+      g.player.troops = 20;
+      g.zombieTimer = 0;
+      G.update(g, 0);
+      jest.restoreAllMocks();
+      return g.zombies[0];
+    };
+    const a = walker('bridge'), b = walker('pass');
+    expect(b.speed).toBeCloseTo(a.speed * G.ENVS.pass.spdMul);
+    expect(b.hp).toBeGreaterThan(a.hp);
+  });
+
+  test('a daily challenge takes its environment from the day, not the pick', () => {
+    const g = G.newGame();
+    const envs = [0, 1, 2, 3].map((i) => {
+      G.resetRun(g, 20766 + i);
+      return g.env;
+    });
+    expect(envs[0]).not.toBe(envs[1]);
+    expect(envs[2]).toBe(envs[0]);
+    expect(envs[3]).toBe(envs[1]);
+    expect(g.envPick).toBe('bridge');
+  });
+
+  test('the pick saves and loads; junk and saved runs leave it alone', () => {
+    const g = G.newGame();
+    G.cycleEnv(g);
+    const fresh = G.newGame();
+    G.loadMeta(fresh, G.saveMeta(g));
+    expect(fresh.envPick).toBe('pass');
+    G.loadMeta(fresh, JSON.stringify({ v: 1, env: 'moon' }));
+    expect(fresh.envPick).toBe('pass');
+    G.loadMeta(fresh, JSON.stringify({ v: 1 })); // stored by an older version
+    expect(fresh.envPick).toBe('pass');
+    // a run saved on the bridge comes back on the bridge, whatever is picked now
+    const other = run();
+    G.togglePause(other);
+    expect(G.loadRun(fresh, G.saveRun(other))).toBe(true);
+    expect(fresh.env).toBe('bridge');
+    expect(fresh.envPick).toBe('pass');
+    // a run saved by an older version has no environment or power-up state
+    const old = JSON.parse(G.saveRun(other));
+    for (const key of ['env', 'envPick', 'drops', 'spits', 'effects', 'flash', 'dropTimer']) delete old.run[key];
+    const g2 = G.newGame();
+    expect(G.loadRun(g2, JSON.stringify(old))).toBe(true);
+    expect(g2.env).toBe('bridge');
+    G.resumeRun(g2);
+    G.update(g2, 0.05);
+    expect(g2.state).toBe('playing');
+  });
+});
+
 describe('losing troops', () => {
   const quiet = (troops) => {
     const g = run({ fireTimer: 1e9, zombieTimer: 1e9, gateTimer: 1e9 });

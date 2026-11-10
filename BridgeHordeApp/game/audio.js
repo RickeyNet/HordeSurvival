@@ -75,6 +75,10 @@ export function createAudioEngine(ctx) {
     if (ev.boom) slide(160, 40, 0.3, 0.09, "sawtooth");
     if (ev.wallBuilt) { tone(440, 0.08, 0.06, "triangle"); tone(550, 0.1, 0.05, "triangle", 0.09); }
     if (ev.wallDown) slide(300, 70, 0.35, 0.08, "sawtooth");
+    if (ev.spit) slide(520, 180, 0.14, 0.035, "sawtooth");
+    if (ev.power === "freeze") { slide(1800, 500, 0.45, 0.05, "sine"); tone(1320, 0.3, 0.03, "triangle", 0.05); }
+    else if (ev.power === "airstrike") slide(1400, 220, 0.7, 0.05, "sawtooth"); // the whistle; the blast is ev.boom
+    else if (ev.power === "rapid") [660, 880, 1100].forEach((f, i) => tone(f, 0.07, 0.05, "square", i * 0.06));
     if (ev.achieved && ev.achieved.length) [784, 988, 1175, 1568].forEach((f, i) => tone(f, 0.16, 0.05, "triangle", i * 0.09));
   }
 

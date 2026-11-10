@@ -4,7 +4,7 @@
 - [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`; the daily board needs migration `0004_daily.sql`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
 - [ ] Add the iOS app icon images (the `AppIcon` asset set is empty) and set a development team in Xcode
 - [ ] Set up Android release signing (`android/keystore.properties` + release keystore); without it release builds use the debug keystore
-- [ ] Check the main menu (new layout: daily challenge button, two rows of two), resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, achievements screen and unlock banner, a daily run, game-over summary (with the rank line and coins), leaderboard tabs (now three), name picker and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
+- [ ] Check the main menu (new layout: map button on top, daily challenge button, two rows of two), resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, achievements screen and unlock banner, a daily run, game-over summary (with the rank line and coins), leaderboard tabs (now three), name picker, the Frozen Pass, the new enemies and the power-up crates and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
 
 ## Cleanup
 - [x] Align version numbers (all 1.1; build numbers stay per platform: Android `versionCode` 2, iOS 1)
@@ -27,7 +27,9 @@
 - [x] Leaderboard depth: rank on the game-over screen, weekly board, player-chosen names (picked from the word lists, not typed)
 
 ## Content
-- [ ] More run variety: new enemy kinds, a second environment, temporary power-ups (freeze, airstrike)
+- [x] More run variety: new enemy kinds (bomber, weaver, spitter), a second environment (Frozen Pass, picked on the menu), temporary power-ups (freeze, airstrike, rapid fire)
+- [ ] Tune the new content from playtests: spawn shares and wave gates of the new kinds, spitter range and rate, crate interval, effect lengths, the Frozen Pass multipliers
+- [ ] Ideas not done yet: an achievement or two for the new content (the Achievements screen is full at 13 rows), a first-time hint for crates, a boss for the new map
 - [ ] Difficulty tuning from playtests (track wave reached)
 
 ## Technical

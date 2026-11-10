@@ -204,7 +204,54 @@ const deckPaint = (() => {
   return p;
 })();
 
-// ---------- Scenery ----------
+// Frozen pass (the second environment, see ENVS in game/core.js)
+const nightSkyPaint = (() => {
+  const p = Skia.Paint();
+  p.setShader(
+    Skia.Shader.MakeLinearGradient(
+      vec(0, 0), vec(0, HORIZON + 40),
+      [Skia.Color("#050816"), Skia.Color("#0f1a38"), Skia.Color("#2b3f68")],
+      [0, 0.6, 1], TileMode.Clamp
+    )
+  );
+  return p;
+})();
+const MOON = { x: 96, y: 78 };
+const moonGlowPaint = (() => {
+  const p = Skia.Paint();
+  p.setShader(
+    Skia.Shader.MakeRadialGradient(
+      vec(MOON.x, MOON.y), 64,
+      [Skia.Color("rgba(200,220,255,0.55)"), Skia.Color("rgba(200,220,255,0)")],
+      [0, 1], TileMode.Clamp
+    )
+  );
+  return p;
+})();
+const snowPaint = (() => {
+  const p = Skia.Paint();
+  p.setShader(
+    Skia.Shader.MakeLinearGradient(
+      vec(0, HORIZON), vec(0, G.H),
+      [Skia.Color("#4a5f85"), Skia.Color("#8ea3c4"), Skia.Color("#c9d6e8")],
+      [0, 0.35, 1], TileMode.Clamp
+    )
+  );
+  return p;
+})();
+const passRoadPaint = (() => {
+  const p = Skia.Paint();
+  p.setShader(
+    Skia.Shader.MakeLinearGradient(
+      vec(0, HORIZON), vec(0, G.H),
+      [Skia.Color("#3a4150"), Skia.Color("#262b35")],
+      [0, 1], TileMode.Clamp
+    )
+  );
+  return p;
+})();
+
+// ---------- Scenery: sunset bridge ----------
 function drawSky(c, t) {
   rect(c, 0, 0, G.W, HORIZON + 40, skyPaint);
   rect(c, 195, HORIZON - 78, 140, 140, sunGlowPaint);
@@ -300,6 +347,88 @@ function drawBridge(c) {
   }
 }
 
+// ---------- Scenery: frozen pass ----------
+const PEAKS_FAR = [[0, 150], [40, 120], [85, 160], [130, 105], [180, 150], [225, 95], [275, 145], [320, 112], [365, 150], [400, 128]];
+const PEAKS_NEAR = [[0, 172], [55, 150], [110, 178], [160, 158], [215, 180], [270, 152], [330, 176], [400, 156]];
+function drawPassSky(c, t) {
+  rect(c, 0, 0, G.W, HORIZON + 40, nightSkyPaint);
+  for (let i = 0; i < 40; i++) {
+    const tw = 0.45 + 0.35 * Math.sin(t * 1.5 + i * 1.7);
+    rect(c, (i * 67) % G.W, (i * 41) % 150, 1.5, 1.5, fill("#ffffff", tw));
+  }
+  rect(c, MOON.x - 64, MOON.y - 64, 128, 128, moonGlowPaint);
+  c.drawCircle(MOON.x, MOON.y, 17, fill("#e8f0ff"));
+  c.drawCircle(MOON.x - 5, MOON.y - 3, 4, fill("#c9d6ea"));
+  c.drawCircle(MOON.x + 6, MOON.y + 5, 2.5, fill("#c9d6ea"));
+}
+function drawPassGround(c) {
+  poly(c, [[0, HORIZON + 4], ...PEAKS_FAR, [G.W, HORIZON + 4]], fill("#16223f"));
+  for (const [x, y] of PEAKS_FAR) {
+    if (y > 125) continue; // only the tall ones carry snow
+    poly(c, [[x, y], [x - 11, y + 13], [x - 4, y + 9], [x + 2, y + 14], [x + 11, y + 13]], fill("#c9d6e8", 0.85));
+  }
+  poly(c, [[0, HORIZON + 4], ...PEAKS_NEAR, [G.W, HORIZON + 4]], fill("#22335a"));
+  rect(c, 0, HORIZON, G.W, G.H - HORIZON, snowPaint);
+}
+function drawPine(c, x, y, k) {
+  rect(c, x - 2 * k, y - 10 * k, 4 * k, 10 * k, fill("#2a2118"));
+  poly(c, [[x - 15 * k, y - 8 * k], [x + 15 * k, y - 8 * k], [x, y - 44 * k]], fill("#173530"));
+  poly(c, [[x - 11 * k, y - 30 * k], [x + 11 * k, y - 30 * k], [x, y - 66 * k]], fill("#1d423b"));
+  poly(c, [[x - 5 * k, y - 50 * k], [x + 5 * k, y - 50 * k], [x, y - 66 * k]], fill("#dfe8f5"));
+}
+function drawPassRoad(c) {
+  const nearS = 1.55;
+  const nl = G.W / 2 + (G.ROAD_L - G.ROAD_MID) * XS * nearS;
+  const nr = G.W / 2 + (G.ROAD_R - G.ROAD_MID) * XS * nearS;
+  const fl = roadEdge(1, "l"), fr = roadEdge(1, "r");
+  poly(c, [[nl, G.H], [fl.x, fl.y], [fr.x, fr.y], [nr, G.H]], passRoadPaint);
+  // snow banks along both edges
+  poly(c, [[nl, G.H], [fl.x, fl.y], [fl.x - 3, fl.y], [nl - 30, G.H]], fill("#e6eef8"));
+  poly(c, [[nr, G.H], [fr.x, fr.y], [fr.x + 3, fr.y], [nr + 30, G.H]], fill("#e6eef8"));
+
+  for (let i = 0; i < 14; i++) {
+    const d0 = i / 14, d1 = d0 + 0.55 / 14;
+    const a = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d0));
+    const b = proj(G.ROAD_MID, G.PLAYER_Y * (1 - d1));
+    poly(c, [
+      [a.x - 2.6 * a.s, a.y], [a.x + 2.6 * a.s, a.y],
+      [b.x + 2.6 * b.s, b.y], [b.x - 2.6 * b.s, b.y],
+    ], fill("rgba(255,255,255,0.22)"));
+  }
+
+  // pines and red-tipped snow poles, far to near
+  for (let i = 0; i < 10; i++) {
+    const d = 0.92 - i * 0.1;
+    for (const side of ["l", "r"]) {
+      const e = roadEdge(d, side);
+      const out = side === "l" ? -1 : 1;
+      const off = 36 + ((i * 37 + (side === "l" ? 0 : 19)) % 50);
+      drawPine(c, e.x + out * off * e.s, e.y, e.s);
+      const px = e.x + out * 5 * e.s;
+      line(c, px, e.y, px, e.y - 22 * e.s, stroke("#c9d3e0", 2 * e.s));
+      line(c, px, e.y - 22 * e.s, px, e.y - 28 * e.s, stroke("#e0342f", 2 * e.s));
+    }
+  }
+}
+function drawSnowfall(c, t) {
+  for (let i = 0; i < 46; i++) {
+    const x = (((i * 97 + t * (10 + (i % 5) * 5) + Math.sin(t + i) * 8) % G.W) + G.W) % G.W;
+    const y = (i * 131 + t * (45 + (i % 7) * 11)) % G.H;
+    c.drawCircle(x, y, 1 + (i % 3) * 0.6, fill("#ffffff", 0.35 + (i % 4) * 0.15));
+  }
+}
+
+// What to draw behind the actors, and in front of them, per environment.
+const SCENES = {
+  bridge: {
+    back: (c, t) => { drawSky(c, t); drawWaterAndCity(c); drawBridge(c); },
+  },
+  pass: {
+    back: (c, t) => { drawPassSky(c, t); drawPassGround(c); drawPassRoad(c); },
+    front: drawSnowfall,
+  },
+};
+
 // ---------- Actors ----------
 function shadow(c, px, py, w) {
   ellipse(c, px, py, w, w * 0.28, fill("rgba(0,0,0,0.3)"));
@@ -313,16 +442,20 @@ const ZPAL = {
   brute:    { skin: "#c97a4a", shirt: "#6e3a1f" },
   summoner: { skin: "#b08ae0", shirt: "#4b2d73" },
   colossus: { skin: "#9aa7b3", shirt: "#4a5560" },
+  bomber:   { skin: "#d8a04a", shirt: "#7a2f1f" },
+  weaver:   { skin: "#7fd6c9", shirt: "#2c5a58" },
+  spitter:  { skin: "#c6d94a", shirt: "#4a5a1c" },
 };
+const ZICE = { skin: "#bfe6ff", shirt: "#6fa8d6", armor: "#8fbfe0" }; // any kind, while frozen
 
-function drawZombie(c, z) {
+function drawZombie(c, z, frozen) {
   const p = proj(z.x, z.y);
   const k = p.s * (z.size / 13) * ACTOR_SCALE;
   const wob = Math.sin(z.wob);
   const fog = fogAlpha(z.y);
   shadow(c, p.x, p.y, 15 * k);
 
-  const pal = ZPAL[z.kind] || ZPAL.walker;
+  const pal = frozen ? ZICE : ZPAL[z.kind] || ZPAL.walker;
   const skin = pal.skin;
   const shirt = pal.shirt;
   const pants = "#2e3440";
@@ -343,6 +476,12 @@ function drawZombie(c, z) {
 
   if (z.kind === "tank") {
     rect(c, p.x - 8 * k, p.y - 38 * k, 16 * k, 14 * k, fill(pal.armor, fog));
+  } else if (z.kind === "bomber") {
+    // swollen, glowing belly
+    c.drawCircle(p.x, p.y - 27 * k, (8.5 + Math.sin(z.wob * 1.5) * 1.5) * k, fill(frozen ? "#8fbfe0" : "#ff6a3c", fog));
+    c.drawCircle(p.x, p.y - 27 * k, 4 * k, fill(frozen ? "#dff2ff" : "#ffd27a", fog));
+  } else if (z.kind === "weaver") {
+    rect(c, p.x - 10 * k, p.y - 33 * k, 20 * k, 3 * k, fill("#e8f0ff", fog));
   }
 
   const hy = p.y - 48 * k + wob * 1.5 * k;
@@ -350,7 +489,8 @@ function drawZombie(c, z) {
   c.drawCircle(p.x, hy, 8 * k, fill(skin, fog));
   c.drawCircle(p.x - 3 * k, hy - 1.5 * k, 1.6 * k, fill(eye, fog));
   c.drawCircle(p.x + 3 * k, hy - 1.5 * k, 1.6 * k, fill(eye, fog));
-  rect(c, p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k, fill("#1d2410", fog));
+  if (z.kind === "spitter") c.drawCircle(p.x, hy + 3.5 * k, 3 * k, fill(frozen ? "#dff2ff" : "#b6e33c", fog)); // mouth full of acid
+  else rect(c, p.x - 3 * k, hy + 3 * k, 6 * k, 1.8 * k, fill("#1d2410", fog));
 
   if (z.hp < z.maxHp || z.big) {
     const w = 26 * k;
@@ -420,6 +560,48 @@ function drawBullet(c, b) {
 }
 
 
+// Acid lobbed by a spitter.
+function drawSpit(c, sp) {
+  const p = proj(sp.x, sp.y);
+  const fog = fogAlpha(sp.y);
+  shadow(c, p.x, p.y, 8 * p.s);
+  c.drawCircle(p.x, p.y - 26 * p.s, 8 * p.s, fill("#b6e33c", fog));
+  c.drawCircle(p.x - 2.5 * p.s, p.y - 28.5 * p.s, 3 * p.s, fill("#e6ff8a", fog));
+}
+
+// A power-up crate (see POWERUPS in game/core.js).
+function drawDrop(c, d) {
+  const p = proj(d.x, d.y);
+  const k = p.s * ACTOR_SCALE;
+  const fog = fogAlpha(d.y);
+  const pu = G.POWERUPS[d.type];
+  const cy = p.y - 16 * k;
+  shadow(c, p.x, p.y, 14 * k);
+  c.drawCircle(p.x, cy, 22 * k, fill(pu.color, 0.22 * fog));
+  const box = Skia.RRectXY(Skia.XYWHRect(p.x - 13 * k, cy - 12 * k, 26 * k, 24 * k), 4 * k, 4 * k);
+  c.drawRRect(box, fill("#1a2230", fog));
+  c.drawRRect(box, stroke(pu.color, 2.5 * k, fog));
+  const ink = stroke(pu.color, 2.2 * k, fog);
+  if (d.type === "freeze") {
+    // snowflake
+    for (let i = 0; i < 3; i++) {
+      const a = (i * Math.PI) / 3;
+      line(c, p.x - Math.cos(a) * 8 * k, cy - Math.sin(a) * 8 * k, p.x + Math.cos(a) * 8 * k, cy + Math.sin(a) * 8 * k, ink);
+    }
+  } else if (d.type === "airstrike") {
+    // falling bomb
+    poly(c, [[p.x - 6 * k, cy - 7 * k], [p.x + 6 * k, cy - 7 * k], [p.x, cy + 8 * k]], fill(pu.color, fog));
+    line(c, p.x - 6 * k, cy - 9 * k, p.x + 6 * k, cy - 9 * k, ink);
+  } else {
+    // chevrons: faster
+    for (const dy of [-5, 2]) {
+      line(c, p.x - 6 * k, cy + (dy + 5) * k, p.x, cy + dy * k, ink);
+      line(c, p.x, cy + dy * k, p.x + 6 * k, cy + (dy + 5) * k, ink);
+    }
+  }
+  scaledText(c, pu.label, p.x, cy - 20 * k, fonts.gate, 22, fill(pu.color, fog), Math.max(0.3, p.s * 0.62));
+}
+
 function drawWall(c, w) {
   const a = proj(G.ROAD_L + 6, w.y), b = proj(G.ROAD_R - 6, w.y);
   const s = proj(G.ROAD_MID, w.y).s * ACTOR_SCALE;
@@ -455,17 +637,34 @@ function drawHUD(c, g) {
   if (g.daily !== null) centerText(c, "DAILY CHALLENGE", G.H - 36, fonts.tiny, 13, DAILY_COLOR);
 }
 
+// Running power-ups, as shrinking bars under the top bar.
+function drawEffects(c, g) {
+  const fx = g.effects;
+  const on = [["freeze", fx.freeze], ["rapid", fx.rapid], ["airstrike", fx.strike]].filter((e) => e[1] > 0);
+  const w = 112, h = 20, gap = 8;
+  let x = G.W / 2 - (on.length * (w + gap) - gap) / 2;
+  for (const [key, left] of on) {
+    const pu = G.POWERUPS[key];
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, 134, w, h), 6, 6), fill("rgba(5,8,14,0.75)"));
+    c.drawRRect(Skia.RRectXY(Skia.XYWHRect(x, 134, w * Math.min(1, left / pu.time), h), 6, 6), fill(pu.color, 0.45));
+    text(c, pu.label, x + w / 2 - textWidth(fonts.tiny, pu.label, 13) / 2, 149, fill("#ffffff"), fonts.tiny);
+    x += w + gap;
+  }
+}
+
 // ---------- Menu buttons (world coordinates) ----------
 const DAILY_COLOR = "#4dd0c4"; // everything that marks the daily challenge
 const btn = (y, h) => ({ x: G.W / 2 - 120, y, w: 240, h });
 const half = (x, y, h) => ({ x, y, w: 172, h });
 // Main menu: the buttons that start a run, then two rows of two.
 const menuGrid = (y) => ({ shop: half(24, y, 54), awards: half(204, y, 54), board: half(24, y + 68, 54), settings: half(204, y + 68, 54) });
-export const MENU_BTNS = { fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
+// The map button sits on its own at the top; tapping it changes the environment.
+const MAP_BTN = { x: 60, y: 96, w: G.W - 120, h: 52 };
+export const MENU_BTNS = { map: MAP_BTN, fight: btn(310, 64), daily: { x: 24, y: 392, w: G.W - 48, h: 54 }, ...menuGrid(460) };
 // Menu while a run is waiting: Resume takes the top spot, the rest move down.
-export const RUN_MENU_BTNS = { resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
+export const RUN_MENU_BTNS = { map: MAP_BTN, resume: btn(310, 64), fight: btn(392, 54), daily: { x: 24, y: 460, w: G.W - 48, h: 54 }, ...menuGrid(528) };
 const RUN_KEY = "hordeRun";
-const META_KEY = "hordeMeta"; // coins and upgrades (G.saveMeta)
+const META_KEY = "hordeMeta"; // coins, upgrades, achievements, daily best, picked map (G.saveMeta)
 const TUTORIAL_KEY = "hordeTutorial"; // "1" once the first-run hints are done
 // "Start a new run?" dialog, shown before New Run discards a waiting run.
 export const CONFIRM_BTNS = { cancel: btn(378, 58), yes: btn(450, 54) };
@@ -534,8 +733,19 @@ function drawDailyButton(c, b, g) {
   centerText(c, played ? "Your best today: " + d.best : "One run a day, the same for everyone", b.y + 44, fonts.tiny, 13, "#c8d3e0");
 }
 
+// The environment for the next ordinary run; tapping moves on to the next one.
+function drawMapButton(c, b, g) {
+  const env = G.ENVS[g.envPick] || G.ENVS.bridge;
+  const rr = Skia.RRectXY(Skia.XYWHRect(b.x, b.y, b.w, b.h), 12, 12);
+  c.drawRRect(rr, fill("rgba(5,8,14,0.55)"));
+  c.drawRRect(rr, stroke("#9fd4ff", 2));
+  centerText(c, "MAP: " + env.label, b.y + 23, fonts.strong, 16, "#9fd4ff");
+  centerText(c, env.desc + "  -  tap to change", b.y + 42, fonts.tiny, 13, "#c8d3e0");
+}
+
 function drawMenu(c, g) {
   rect(c, 0, 0, G.W, G.H, fill("rgba(0,0,0,0.6)"));
+  drawMapButton(c, (g.inRun ? RUN_MENU_BTNS : MENU_BTNS).map, g);
   centerText(c, "HORDE SURVIVAL", 208, fonts.title, 40, "#ffffff");
   drawCoins(c, G.W / 2, 286, g.coins, fonts.sub, 21, "#f5c211");
   const btns = g.inRun ? RUN_MENU_BTNS : MENU_BTNS;
@@ -544,7 +754,7 @@ function drawMenu(c, g) {
     drawButton(c, btns.resume, "RESUME", true);
     drawButton(c, btns.fight, "NEW RUN");
   } else {
-    centerText(c, g.best > 0 ? "Best: " + g.best : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
+    centerText(c, g.best > 0 ? "Best: " + g.best : g.envPick === "pass" ? "Hold the pass." : "Hold the bridge.", 252, fonts.sub, 21, "#9fd4ff");
     drawButton(c, btns.fight, "FIGHT HORDE", true);
     centerText(c, "Drag to move - you fire automatically", 618, fonts.small, 16, "#c8d3e0");
     centerText(c, "Steer into gates - avoid the red ones!", 642, fonts.small, 16, "#c8d3e0");
@@ -799,19 +1009,23 @@ function drawGame(c, g, layout, t, ui) {
   c.save();
   if (g.shake > 0 && settings.shake) c.translate((Math.random() - 0.5) * g.shake, (Math.random() - 0.5) * g.shake);
 
-  drawSky(c, t);
-  drawWaterAndCity(c);
-  drawBridge(c);
+  const scene = SCENES[G.sceneEnv(g)];
+  scene.back(c, t);
 
+  const frozen = g.effects.freeze > 0;
   const actors = [
     ...g.gates.map((gate) => ({ y: gate.y, kind: "gate", ref: gate })),
     ...g.zombies.map((z) => ({ y: z.y, kind: "zombie", ref: z })),
     ...g.walls.map((w) => ({ y: w.y, kind: "wall", ref: w })),
+    ...g.drops.map((d) => ({ y: d.y, kind: "drop", ref: d })),
+    ...g.spits.map((sp) => ({ y: sp.y, kind: "spit", ref: sp })),
   ].sort((a, b) => a.y - b.y);
   for (const a of actors) {
     if (a.kind === "gate") drawGate(c, a.ref);
     else if (a.kind === "wall") drawWall(c, a.ref);
-    else drawZombie(c, a.ref);
+    else if (a.kind === "drop") drawDrop(c, a.ref);
+    else if (a.kind === "spit") drawSpit(c, a.ref);
+    else drawZombie(c, a.ref, frozen);
   }
 
   for (const b of g.bullets) drawBullet(c, b);
@@ -830,6 +1044,10 @@ function drawGame(c, g, layout, t, ui) {
     scaledText(c, f.text, q.x, q.y - 60 * q.s, fonts.float, 22, fill(f.color, Math.max(0, f.life)), k);
   }
 
+  if (scene.front) scene.front(c, t);
+  if (frozen) rect(c, 0, HORIZON, G.W, G.H - HORIZON, fill("#7fd4ff", 0.1)); // cold haze over the road
+  if (g.flash > 0) rect(c, 0, 0, G.W, G.H, fill("#ffffff", g.flash * 0.7)); // airstrike
+
   if (g.banner.life > 0) {
     const a = Math.min(1, g.banner.life);
     const bw = textWidth(fonts.banner, g.banner.text, 40);
@@ -838,6 +1056,7 @@ function drawGame(c, g, layout, t, ui) {
   }
 
   drawHUD(c, g);
+  drawEffects(c, g);
   if (ui.hint) drawHint(c, ui.hint);
   c.restore();
   if (ui.namePick) drawNamePicker(c, ui.namePick);
@@ -1012,6 +1231,7 @@ export default function App() {
         else if (g.events.achieved.length) haptic("notificationSuccess");
         else if (g.events.bossSpawn) haptic("notificationWarning");
         else if (g.events.troopLost) haptic("impactHeavy");
+        else if (g.events.power) haptic("impactMedium");
         // announce new achievements one after the other, and keep them (with their coins)
         if (g.events.achieved.length) {
           for (const id of g.events.achieved) toasts.current.push({ id, until: 0 });
@@ -1148,6 +1368,10 @@ export default function App() {
         } else {
           G.resetRun(g, start === "daily" ? today : null);
         }
+      } else if (hit(btns.map, wx, wy)) {
+        G.cycleEnv(g);
+        storeMeta(); // the pick is kept with the coins and upgrades
+        if (engine) engine.click();
       } else if (hit(btns.shop, wx, wy)) {
         shopOpen.current = true;
         if (engine) engine.click();

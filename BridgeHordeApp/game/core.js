@@ -19,15 +19,59 @@ export const WAVE_LEN = 18; // seconds per wave
 // ---------- Enemy catalog ----------
 // hpMul scales off the adaptive hp base; spdMul off the wave-scaled speed.
 // troopCost = soldiers lost if it reaches your line.
+// bomber: bursts when shot, hurting the zombies around it, and blows a chunk
+// out of the first wall it reaches. weaver: sways across the road as it
+// comes. spitter: stops short of the squad and lobs acid at it.
 export const KIND_STATS = {
   walker:   { size: 13, hpMul: 0.75, spdMul: 1.0,  troopCost: 1, score: 1 },
   runner:   { size: 11, hpMul: 0.4,  spdMul: 1.8,  troopCost: 1, score: 2 },
   tank:     { size: 18, hpMul: 2.6,  spdMul: 0.55, troopCost: 2, score: 4 },
+  bomber:   { size: 14, hpMul: 0.6,  spdMul: 1.25, troopCost: 2, score: 3 },
+  weaver:   { size: 11, hpMul: 0.55, spdMul: 1.3,  troopCost: 1, score: 3 },
+  spitter:  { size: 15, hpMul: 1.3,  spdMul: 0.8,  troopCost: 1, score: 5 },
   brute:    { size: 30, hpMul: 9,    spdMul: 0.4,  troopCost: 3, score: 25, boss: true },
   summoner: { size: 26, hpMul: 7,    spdMul: 0.34, troopCost: 3, score: 30, boss: true },
   colossus: { size: 38, hpMul: 14,   spdMul: 0.26, troopCost: 5, score: 50, boss: true },
 };
 const BOSS_CYCLE = ["brute", "summoner", "colossus"];
+export const BOMB_RADIUS = 55; // reach of a bomber's blast
+export const BOMB_WALL = 0.4; // share of a wall's full hit points a bomber takes off
+export const WEAVE = 55; // how far a weaver sways to either side
+export const SPIT_HOLD = PLAYER_Y - 250; // where a spitter stops
+export const SPIT_EVERY = 3.2; // seconds between a spitter's shots
+export const SPIT_SPEED = 230;
+export const MAX_SPITTERS = 3; // on the road at once
+
+// ---------- Environments ----------
+// Where a run takes place. The renderers draw each one differently; hpMul and
+// spdMul scale every zombie spawned there. An ordinary run uses the one picked
+// on the menu (g.envPick); a daily challenge takes its own from the day.
+export const ENVS = {
+  bridge: { label: "SUNSET BRIDGE", desc: "The classic", hpMul: 1, spdMul: 1 },
+  pass: { label: "FROZEN PASS", desc: "Slower horde, thicker hides", hpMul: 1.25, spdMul: 0.85 },
+};
+export const ENV_KEYS = Object.keys(ENVS);
+// The next environment on the menu, for the following ordinary run.
+export function cycleEnv(g) {
+  g.envPick = ENV_KEYS[(ENV_KEYS.indexOf(g.envPick) + 1) % ENV_KEYS.length];
+}
+// The environment to draw: the picked one on the bare menu, else the run's.
+export function sceneEnv(g) {
+  const key = g.state === "menu" && !g.inRun ? g.envPick : g.env;
+  return ENVS[key] ? key : "bridge";
+}
+
+// ---------- Power-ups ----------
+// Crates that come down the road; steer the squad into one to take it.
+// time = how long the effect lasts (for the airstrike: how long until it lands).
+export const POWERUPS = {
+  freeze: { label: "FREEZE", color: "#7fd4ff", time: 4 },
+  airstrike: { label: "AIRSTRIKE", color: "#ff7a3c", time: 0.7 },
+  rapid: { label: "RAPID FIRE", color: "#ffe14d", time: 6 },
+};
+const POWERUP_KEYS = Object.keys(POWERUPS);
+export const DROP_SPEED = 95;
+export const STRIKE_BOSS = 0.35; // share of a boss's full health an airstrike takes off
 
 // ---------- Weapon catalog ----------
 // rateMul/dmgMul multiply the squad's base stats; pellets = shots per soldier
@@ -47,6 +91,7 @@ function freshEvents() {
     shot: false, kill: false, bigKill: false, gate: null, troopLost: false,
     waveStart: false, bossSpawn: false, bossDown: false, summon: false,
     pickup: null, boom: false, wallBuilt: false, wallDown: false,
+    spit: false, power: null, // power: key of the POWERUPS crate just taken
     achieved: [], // ids of ACHIEVEMENTS unlocked this frame
   };
 }
@@ -59,6 +104,12 @@ export function newGame() {
     zombies: [],
     gates: [],
     walls: [], // up to 3 { y, hp, maxHp } barricades zombies must chew through
+    spits: [], // acid in the air: { x, y, vx, vy }
+    drops: [], // power-up crates on the road: { x, y, type }
+    effects: { freeze: 0, rapid: 0, strike: 0 }, // seconds left; strike counts down to the airstrike landing
+    flash: 0, // white-out after an airstrike, 1 -> 0
+    env: "bridge", // key of ENVS this run is played in
+    envPick: "bridge", // environment picked on the menu; kept between runs
     particles: [],
     floaters: [],
     events: freshEvents(),
@@ -86,27 +137,31 @@ export function newGame() {
     fireTimer: 0,
     zombieTimer: 1.2,
     gateTimer: 3.5,
+    dropTimer: 16,
   };
 }
 
-// Start over, keeping what outlives a run: best scores, coins, upgrades and
-// achievements.
+// Start over, keeping what outlives a run: best scores, coins, upgrades,
+// achievements and the picked environment.
 function clearRun(g) {
-  const { best, coins, upgrades, dailyBest, achieved } = g;
-  Object.assign(g, newGame(), { best, coins, upgrades, dailyBest, achieved });
+  const { best, coins, upgrades, dailyBest, achieved, envPick } = g;
+  Object.assign(g, newGame(), { best, coins, upgrades, dailyBest, achieved, envPick });
 }
 
 // Start a run. Pass a day number (dayOf) to play that day's challenge: its
 // gates and horde come from a seed fixed by the day, and bought upgrades are
-// left out, so everyone faces the same run from the same start.
+// left out, so everyone faces the same run from the same start. The day also
+// sets the environment.
 export function resetRun(g, daily = null) {
   clearRun(g);
   if (daily === null) {
     g.player.troops += g.upgrades.troops;
     g.player.damage += g.upgrades.damage;
+    g.env = ENVS[g.envPick] ? g.envPick : "bridge";
   } else {
     g.daily = daily;
     g.rng = seedRng(daily);
+    g.env = ENV_KEYS[daily % ENV_KEYS.length];
   }
   g.state = "playing";
   g.banner = { text: daily === null ? "WAVE 1" : "DAILY CHALLENGE", life: 2 };
@@ -118,15 +173,15 @@ export const DAY_MS = 86400000;
 export const dayOf = (ms) => Math.floor(ms / DAY_MS);
 export const dayEnd = (day) => (day + 1) * DAY_MS;
 
-// A daily run draws its gates, its horde and the summoners' walkers from
-// three separate seeded streams, so what one of them has used up (which
+// A daily run draws its gates, its horde, the summoners' walkers and its
+// power-up crates from separate seeded streams, so what one of them has used up (which
 // depends on how the player is doing) never shifts the others. Every other
 // run has no rng and uses Math.random. The stream states are plain numbers,
 // so a saved run carries them along.
 /* eslint-disable no-bitwise */
 function seedRng(seed) {
   const mix = (n) => Math.imul(seed ^ n, 0x9e3779b1) >>> 0;
-  return { gates: mix(0x1f123bb5), spawns: mix(0x5bd1e995), minions: mix(0x27d4eb2f) };
+  return { gates: mix(0x1f123bb5), spawns: mix(0x5bd1e995), minions: mix(0x27d4eb2f), drops: mix(0x165667b1) };
 }
 function rand(g, stream) {
   if (!g.rng) return Math.random();
@@ -176,8 +231,9 @@ export function loadRun(g, json) {
   // coins, upgrades, achievements and the daily best are stored on their own
   // (saveMeta), so the copy inside a saved run may be out of date and is
   // never used
-  const { coins, upgrades, dailyBest, achieved } = g;
-  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins, upgrades, dailyBest, achieved });
+  const { coins, upgrades, dailyBest, achieved, envPick } = g;
+  Object.assign(g, newGame(), run, { state: "menu", inRun: true, best, coins, upgrades, dailyBest, achieved, envPick });
+  if (!ENVS[g.env]) g.env = "bridge";
   return true;
 }
 
@@ -235,7 +291,8 @@ function unlock(g, id) {
   g.events.achieved.push(id);
 }
 
-// Coins, upgrades, achievements and the daily best as a JSON string, and
+// Coins, upgrades, achievements, the daily best and the picked environment as
+// a JSON string, and
 // back, for the platform to store. Coins already in g when the stored ones
 // arrive (a run that ended before loading finished) are added on top, not
 // lost.
@@ -244,6 +301,7 @@ export function saveMeta(g) {
   return JSON.stringify({
     v: META_VERSION, coins: g.coins, upgrades: g.upgrades,
     achieved: ACHIEVEMENTS.filter((a) => g.achieved[a.id]).map((a) => a.id), daily: g.dailyBest,
+    env: g.envPick,
   });
 }
 export function loadMeta(g, json) {
@@ -260,6 +318,7 @@ export function loadMeta(g, json) {
   for (const a of ACHIEVEMENTS) if (ids.includes(a.id)) g.achieved[a.id] = true;
   const daily = saved.daily || {};
   recordDaily(g, whole(daily.day, Number.MAX_SAFE_INTEGER), whole(daily.best, Number.MAX_SAFE_INTEGER));
+  if (typeof saved.env === "string" && ENVS[saved.env]) g.envPick = saved.env;
   return true;
 }
 
@@ -398,14 +457,15 @@ function spawnZombie(g, kind, stream = "spawns") {
     hpMul *= 1 + (g.bossTier - 1) * 0.35; // each boss cycle comes back tougher
     scoreVal += (g.bossTier - 1) * 10;
   }
+  const env = ENVS[g.env] || ENVS.bridge;
   const baseSpeed = 40 + rand(g, stream) * 18 + Math.min(32, g.wave * 2.5);
   const z = {
     x: ROAD_L + 20 + rand(g, stream) * (ROAD_R - ROAD_L - 40),
     y: -30,
     kind,
-    hp: Math.max(1, Math.ceil(hpBase * hpMul)),
+    hp: Math.max(1, Math.ceil(hpBase * hpMul * env.hpMul)),
     maxHp: 0,
-    speed: baseSpeed * st.spdMul,
+    speed: baseSpeed * st.spdMul * env.spdMul,
     size: st.size,
     boss: !!st.boss,
     big: !!st.boss || kind === "tank",
@@ -414,6 +474,14 @@ function spawnZombie(g, kind, stream = "spawns") {
     wob: Math.random() * Math.PI * 2,
     summonTimer: kind === "summoner" ? 2.5 : 0,
   };
+  if (kind === "weaver") {
+    // sways around cx, which is kept far enough from the rails
+    z.cx = Math.max(ROAD_L + 20 + WEAVE, Math.min(ROAD_R - 20 - WEAVE, z.x));
+    z.phase = rand(g, stream) * Math.PI * 2;
+    z.x = z.cx + Math.sin(z.phase) * WEAVE;
+  } else if (kind === "spitter") {
+    z.spitTimer = SPIT_EVERY * 0.6;
+  }
   z.maxHp = z.hp;
   g.zombies.push(z);
   return z;
@@ -431,10 +499,40 @@ function floatText(g, x, y, str, color) {
   g.floaters.push({ x, y, text: str, color, life: 1 });
 }
 
+// Hurt every living zombie within r of a point, except `skip`.
+function splash(g, x, y, r, dmg, wkey, skip) {
+  for (const o of g.zombies) {
+    if (o === skip || o.hp <= 0) continue;
+    const ox = o.x - x, oy = o.y - y;
+    if (ox * ox + oy * oy < r * r) {
+      o.hp -= dmg;
+      if (o.hp <= 0) registerKill(g, o, wkey);
+    }
+  }
+}
+
+function damageWall(g, w, amount) {
+  if (w.hp <= 0) return;
+  w.hp -= amount;
+  if (w.hp <= 0) {
+    burst(g, ROAD_MID, w.y - 10, "#8a6b42", 24);
+    floatText(g, ROAD_MID, w.y - 30, "WALL DOWN!", "#e0342f");
+    g.events.wallDown = true;
+  }
+}
+
+const KILL_COLORS = { tank: "#7fa08a", bomber: "#ff8c4d", weaver: "#7fd6c9", spitter: "#c6d94a" };
+
 // wkey: the weapon that fired the killing shot
 function registerKill(g, z, wkey) {
   if (z.scored) return;
   z.scored = true;
+  if (z.kind === "bomber") {
+    // takes its neighbours with it; another bomber in reach goes off in turn
+    g.events.boom = true;
+    burst(g, z.x, z.y, "#ff8c4d", 18);
+    splash(g, z.x, z.y, BOMB_RADIUS, Math.ceil(z.maxHp * 2), wkey, z);
+  }
   if (z.boss) {
     unlock(g, "boss");
     if (wkey === "rifle") unlock(g, "rifleBoss");
@@ -442,13 +540,65 @@ function registerKill(g, z, wkey) {
   }
   g.kills++;
   g.score += z.scoreVal;
-  const col = z.boss ? "#ffd84d" : z.kind === "tank" ? "#7fa08a" : "#5aa832";
+  const col = z.boss ? "#ffd84d" : KILL_COLORS[z.kind] || "#5aa832";
   burst(g, z.x, z.y, col, z.boss ? 30 : z.big ? 22 : 8);
   if (z.boss) {
     g.events.bossDown = true;
     floatText(g, z.x, z.y - 30, "+" + z.scoreVal, "#ffd84d");
   } else if (z.big) g.events.bigKill = true;
   else g.events.kill = true;
+}
+
+// ---------- Losing troops, and the run ----------
+function endRun(g, saveBest) {
+  if (g.state !== "playing") return; // a second hit in the same frame must not pay out again
+  g.state = "gameover";
+  g.earned = coinsFor(g.score, g.wave);
+  g.coins += g.earned;
+  if (g.score > g.best) {
+    g.best = g.score;
+    g.newBest = true;
+    if (saveBest) saveBest(g.best);
+  }
+  if (g.daily !== null) {
+    g.newDailyBest = recordDaily(g, g.daily, g.score) && g.score > 0;
+    unlock(g, "daily");
+  }
+}
+// The squad loses n soldiers at (x, y); `what` leads the floating text.
+function loseTroops(g, n, x, y, what, big, saveBest) {
+  g.hits++;
+  g.player.troops -= n;
+  g.shake = big ? 12 : 6;
+  burst(g, x, y, "#e0342f", big ? 30 : 16);
+  floatText(g, x, y - 30, what + "-" + n + (n > 1 ? " TROOPS" : " TROOP"), "#e0342f");
+  g.events.troopLost = true;
+  if (g.player.troops <= 0) {
+    g.player.troops = 0;
+    endRun(g, saveBest);
+  }
+}
+
+// ---------- Power-ups ----------
+function takePowerup(g, type) {
+  const p = POWERUPS[type];
+  g.effects[type === "airstrike" ? "strike" : type] = p.time;
+  g.events.power = type;
+  floatText(g, g.player.x, PLAYER_Y - 40, p.label + "!", p.color);
+  burst(g, g.player.x, PLAYER_Y - 20, p.color, 14);
+}
+// The airstrike lands: everything on the road dies, a boss is badly hurt.
+function airstrike(g) {
+  g.flash = 1;
+  g.shake = 12;
+  g.events.boom = true;
+  for (const z of g.zombies) {
+    if (z.hp <= 0 || z.y < -10) continue;
+    z.hp = z.boss ? z.hp - Math.ceil(z.maxHp * STRIKE_BOSS) : 0;
+    burst(g, z.x, z.y, "#ff8c4d", 6);
+    if (z.hp <= 0) registerKill(g, z, "airstrike");
+  }
+  g.spits = [];
 }
 
 // ---------- Per-frame update ----------
@@ -458,7 +608,19 @@ export function update(g, dt, saveBest) {
   g.events = freshEvents();
   g.elapsed += dt;
   g.shake = Math.max(0, g.shake - dt * 30);
+  g.flash = Math.max(0, g.flash - dt * 2.5);
   g.banner.life = Math.max(0, g.banner.life - dt);
+
+  // Power-up effects run down; the airstrike lands when its countdown ends.
+  // A freeze holds the horde and its acid still, and nothing new arrives; the
+  // wave clock keeps running.
+  const fx = g.effects;
+  const striking = fx.strike > 0;
+  fx.freeze = Math.max(0, fx.freeze - dt);
+  fx.rapid = Math.max(0, fx.rapid - dt);
+  fx.strike = Math.max(0, fx.strike - dt);
+  if (striking && fx.strike === 0) airstrike(g);
+  const frozen = fx.freeze > 0;
 
   const half = formationHalfWidth(g);
   g.player.x = Math.max(ROAD_L + half, Math.min(ROAD_R - half, g.player.x));
@@ -483,7 +645,7 @@ export function update(g, dt, saveBest) {
   const wp = WEAPONS[g.player.weapon] || WEAPONS.rifle;
   g.fireTimer -= dt;
   if (g.fireTimer <= 0) {
-    g.fireTimer = 1 / (g.player.fireRate * wp.rateMul);
+    g.fireTimer = 1 / (g.player.fireRate * wp.rateMul * (fx.rapid > 0 ? 2 : 1));
     const dmg = Math.max(1, Math.round(g.player.damage * wp.dmgMul));
     for (const s of formationSpots(g.player.troops, g.player.x)) {
       for (let pi = 0; pi < wp.pellets; pi++) {
@@ -504,7 +666,7 @@ export function update(g, dt, saveBest) {
 
   // Regular spawns: denser every wave, eased off a bit while a boss is up
   const bossAlive = g.zombies.some((z) => z.boss && z.hp > 0);
-  g.zombieTimer -= dt;
+  if (!frozen) g.zombieTimer -= dt;
   if (g.zombieTimer <= 0) {
     let interval = Math.max(0.16, 0.85 - g.wave * 0.055);
     if (bossAlive) interval *= 1.7;
@@ -512,11 +674,38 @@ export function update(g, dt, saveBest) {
     const roll = rand(g, "spawns");
     const tankP = g.wave >= 5 ? Math.min(0.16, 0.03 + g.wave * 0.012) : 0;
     const runnerP = g.wave >= 3 ? Math.min(0.3, 0.06 + g.wave * 0.02) : 0;
+    // the newer kinds take the top of the roll, so the older ones keep theirs
+    const spitters = g.zombies.filter((z) => z.kind === "spitter" && z.hp > 0).length;
+    const spitterP = g.wave >= 8 && spitters < MAX_SPITTERS ? Math.min(0.07, 0.01 + g.wave * 0.005) : 0;
+    const weaverP = g.wave >= 6 ? Math.min(0.1, 0.02 + g.wave * 0.007) : 0;
+    const bomberP = g.wave >= 4 ? Math.min(0.1, 0.02 + g.wave * 0.008) : 0;
     let kind = "walker";
     if (roll < tankP) kind = "tank";
     else if (roll < tankP + runnerP) kind = "runner";
+    else if (roll >= 1 - spitterP) kind = "spitter";
+    else if (roll >= 1 - spitterP - weaverP) kind = "weaver";
+    else if (roll >= 1 - spitterP - weaverP - bomberP) kind = "bomber";
     spawnZombie(g, kind);
   }
+
+  // Power-up crates: one every so often, taken by steering the squad into it
+  g.dropTimer -= dt;
+  if (g.dropTimer <= 0) {
+    g.dropTimer = 14 + rand(g, "drops") * 8;
+    g.drops.push({
+      x: ROAD_L + 30 + rand(g, "drops") * (ROAD_R - ROAD_L - 60),
+      y: -20,
+      type: POWERUP_KEYS[Math.floor(rand(g, "drops") * POWERUP_KEYS.length)],
+    });
+  }
+  for (const d of g.drops) {
+    d.y += DROP_SPEED * dt;
+    if (d.y >= PLAYER_Y - 10 && d.y <= PLAYER_Y + 24 && Math.abs(d.x - g.player.x) < half + 16) {
+      d.taken = true;
+      takePowerup(g, d.type);
+    }
+  }
+  g.drops = g.drops.filter((d) => !d.taken && d.y < H);
 
   g.gateTimer -= dt;
   if (g.gateTimer <= 0) {
@@ -541,7 +730,9 @@ export function update(g, dt, saveBest) {
   // Zombies march; each stops at the first standing wall ahead of it and
   // chews through; summoners raise walkers as they advance
   for (const z of g.zombies) {
-    const newY = z.y + z.speed * dt;
+    if (frozen || z.hp <= 0) continue;
+    let newY = z.y + z.speed * dt;
+    if (z.kind === "spitter" && newY > SPIT_HOLD) newY = Math.max(z.y, SPIT_HOLD);
     let hitWall = null, stopAt = Infinity;
     for (const w of g.walls) {
       if (w.hp <= 0) continue;
@@ -551,18 +742,37 @@ export function update(g, dt, saveBest) {
         hitWall = w;
       }
     }
+    if (hitWall && z.kind === "bomber") {
+      // goes off against the wall: no kill, no score
+      z.y = stopAt;
+      z.hp = 0;
+      g.events.boom = true;
+      burst(g, z.x, z.y, "#ff8c4d", 18);
+      damageWall(g, hitWall, hitWall.maxHp * BOMB_WALL);
+      continue;
+    }
     if (hitWall) {
       z.y = stopAt;
-      hitWall.hp -= (z.boss ? 30 : z.kind === "tank" ? 12 : 6) * (1 + g.wave * 0.06) * dt;
-      if (hitWall.hp <= 0) {
-        burst(g, ROAD_MID, hitWall.y - 10, "#8a6b42", 24);
-        floatText(g, ROAD_MID, hitWall.y - 30, "WALL DOWN!", "#e0342f");
-        g.events.wallDown = true;
-      }
+      damageWall(g, hitWall, (z.boss ? 30 : z.kind === "tank" ? 12 : 6) * (1 + g.wave * 0.06) * dt);
     } else {
       z.y = newY;
+      if (z.kind === "weaver") {
+        z.phase += dt * 2.6;
+        z.x = z.cx + Math.sin(z.phase) * WEAVE;
+      }
     }
     z.wob += dt * 8;
+    if (z.kind === "spitter" && z.y > 60) {
+      z.spitTimer -= dt;
+      if (z.spitTimer <= 0) {
+        // aimed at where the squad stands now, so moving on dodges it
+        z.spitTimer = SPIT_EVERY;
+        const dx = g.player.x - z.x, dy = PLAYER_Y - z.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        g.spits.push({ x: z.x, y: z.y, vx: (dx / dist) * SPIT_SPEED, vy: (dy / dist) * SPIT_SPEED });
+        g.events.spit = true;
+      }
+    }
     if (z.kind === "summoner" && z.hp > 0 && z.y > 40) {
       z.summonTimer -= dt;
       if (z.summonTimer <= 0) {
@@ -590,15 +800,7 @@ export function update(g, dt, saveBest) {
         if (b.aoe) {
           g.events.boom = true;
           burst(g, b.x, b.y, "#ff8c4d", 18);
-          const splash = Math.max(1, Math.round(b.dmg * 0.7));
-          for (const o of g.zombies) {
-            if (o === z || o.hp <= 0) continue;
-            const ox = o.x - b.x, oy = o.y - b.y;
-            if (ox * ox + oy * oy < b.aoe * b.aoe) {
-              o.hp -= splash;
-              if (o.hp <= 0) registerKill(g, o, b.wkey);
-            }
-          }
+          splash(g, b.x, b.y, b.aoe, Math.max(1, Math.round(b.dmg * 0.7)), b.wkey, z);
         }
         if (b.pierce > 0) b.pierce--;
         else b.y = -999;
@@ -618,31 +820,22 @@ export function update(g, dt, saveBest) {
     const breached = z.y >= PLAYER_Y + 20;
     if (!hit && !breached) continue;
     z.hp = 0;
-    g.hits++;
-    g.player.troops -= z.troopCost;
-    g.shake = z.boss ? 12 : 6;
-    const fy = hit ? PLAYER_Y : PLAYER_Y + 20;
-    burst(g, z.x, fy, "#e0342f", z.boss ? 30 : 16);
-    const label = "-" + z.troopCost + (z.troopCost > 1 ? " TROOPS" : " TROOP");
-    floatText(g, z.x, fy - 30, hit ? label : "BREACH " + label, "#e0342f");
-    g.events.troopLost = true;
-    if (g.player.troops <= 0) {
-      g.player.troops = 0;
-      g.state = "gameover";
-      g.earned = coinsFor(g.score, g.wave);
-      g.coins += g.earned;
-      if (g.score > g.best) {
-        g.best = g.score;
-        g.newBest = true;
-        if (saveBest) saveBest(g.best);
-      }
-      if (g.daily !== null) {
-        g.newDailyBest = recordDaily(g, g.daily, g.score) && g.score > 0;
-        unlock(g, "daily");
-      }
-    }
+    loseTroops(g, z.troopCost, z.x, hit ? PLAYER_Y : PLAYER_Y + 20, hit ? "" : "BREACH ", z.boss, saveBest);
   }
   g.zombies = g.zombies.filter((z) => z.hp > 0 && z.y < H + 40);
+
+  // Acid in flight: it costs a soldier if the squad is still under it when
+  // it comes down, and splashes on the road if not
+  for (const sp of g.spits) {
+    if (frozen) break;
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    if (sp.y < PLAYER_Y - 8) continue;
+    sp.done = true;
+    if (Math.abs(sp.x - g.player.x) < half + 8) loseTroops(g, 1, sp.x, PLAYER_Y, "ACID ", false, saveBest);
+    else burst(g, sp.x, PLAYER_Y, "#b6e33c", 8);
+  }
+  g.spits = g.spits.filter((sp) => !sp.done);
   for (const a of ACHIEVEMENTS) if (a.when && !g.achieved[a.id] && a.when(g)) unlock(g, a.id);
 
   for (const p of g.particles) {
