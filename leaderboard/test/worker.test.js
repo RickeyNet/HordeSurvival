@@ -13,9 +13,12 @@ import * as core from "../../BridgeHordeApp/game/core.js";
 // ---------- D1 stand-in ----------
 const MIGRATIONS = new URL("../migrations/", import.meta.url);
 
-function makeDb() {
+const MIGRATION_FILES = readdirSync(MIGRATIONS).sort();
+
+// `only` picks the migrations to apply (all of them unless given).
+function makeDb(only = () => true) {
   const sqlite = new DatabaseSync(":memory:");
-  for (const file of readdirSync(MIGRATIONS).sort()) {
+  for (const file of MIGRATION_FILES.filter(only)) {
     sqlite.exec(readFileSync(new URL(file, MIGRATIONS), "utf8"));
   }
   const statement = (text, args) => ({
@@ -337,6 +340,103 @@ test("the scheduled run drops finished weeks but keeps the last one", async () =
   await worker.scheduled({}, env);
   assert.deepEqual(weeks(), [weekOf(now) - 1]);
   assert.equal((await board()).body.total, 2); // all-time entries stay
+});
+
+// ---------- score counts ----------
+// Ranks and totals come from the score_counts table, which triggers keep in
+// step with the three score tables (migrations/0005_score_counts.sql).
+
+// The counts as they should be, counted again from the score tables.
+const RECOUNT = [[0, "best"], [1, "best >> 8"]].flatMap(([level, bucket]) => [
+  `SELECT 'all' AS board, 0 AS period, ${level} AS level, ${bucket} AS bucket, COUNT(*) AS n FROM players GROUP BY 4`,
+  `SELECT 'week', week, ${level}, ${bucket}, COUNT(*) FROM weekly GROUP BY 2, 4`,
+  `SELECT 'day', day, ${level}, ${bucket}, COUNT(*) FROM daily GROUP BY 2, 4`,
+]).join(" UNION ALL ");
+const ORDER = " ORDER BY board, period, level, bucket";
+function assertCountsMatch(sqlite = env.DB.sqlite) {
+  const kept = sqlite.prepare("SELECT board, period, level, bucket, n FROM score_counts WHERE n <> 0" + ORDER).all();
+  const recount = sqlite.prepare(`SELECT * FROM (${RECOUNT})` + ORDER).all();
+  assert.deepEqual(kept, recount);
+}
+
+test("ranks and totals are right across the blocks the scores are counted in", async () => {
+  // Blocks are 256 scores wide: 255 | 256 257 511 | 512 ... and the top score.
+  const scores = [255, 256, 257, 257, 511, 512, 5000, 180_100];
+  const ids = scores.map((_, i) => i.toString(16).padStart(32, "0"));
+  for (const [i, score] of scores.entries()) {
+    const elapsed = score > 2000 ? MAX_ELAPSED : 100;
+    const res = await submitDaily(ids[i], { score, wave: 1 + Math.floor(elapsed / 18), elapsed });
+    assert.equal(res.status, 200, "score " + score);
+  }
+  assertCountsMatch();
+
+  for (const [i, score] of scores.entries()) {
+    const rank = 1 + scores.filter((other) => other > score).length;
+    const { body } = await call("GET", "/rank?player=" + ids[i]);
+    for (const which of ["all", "week", "day"]) {
+      assert.deepEqual(
+        { best: body[which].best, rank: body[which].rank, total: body[which].total },
+        { best: score, rank, total: scores.length },
+        `${which} board, score ${score}`
+      );
+    }
+  }
+});
+
+test("the score counts follow better scores, lower scores, removals and new periods", async () => {
+  await submitDaily(ID_A);
+  await submitDaily(ID_B, { score: 300, wave: 6, elapsed: 100 });
+  await submit(ID_C, { score: 700, wave: 6, elapsed: 100 });
+  assertCountsMatch();
+
+  await submitLater(ID_B, { score: 900, wave: 9, elapsed: 150 }); // into another block
+  assertCountsMatch();
+  await submitLater(ID_B, { score: 100, wave: 6, elapsed: 100 }); // not a new best
+  assertCountsMatch();
+  assert.equal((await call("GET", "/rank?player=" + ID_B)).body.all.rank, 1);
+  assert.equal((await call("GET", "/rank?player=" + ID_B)).body.day.rank, 2); // 900 was not a challenge run
+
+  now += DAY_MS;
+  await submitDaily(ID_A, { score: 400, wave: 6, elapsed: 100 }); // a new day, below the all-time best
+  assertCountsMatch();
+
+  // What scripts/remove-score.js runs.
+  env.DB.sqlite.exec(
+    `DELETE FROM players WHERE id = '${ID_A}'; DELETE FROM weekly WHERE id = '${ID_A}';
+     DELETE FROM daily WHERE id = '${ID_A}'`
+  );
+  assertCountsMatch();
+  const { body } = await call("GET", "/rank?player=" + ID_C);
+  assert.deepEqual(body.all, { best: 700, rank: 2, total: 2 });
+  assert.equal(body.day.total, 0);
+});
+
+test("the scheduled run drops the score counts of finished weeks and days", async () => {
+  await submitDaily(ID_A);
+  now += 2 * WEEK_MS;
+  await submitDaily(ID_B);
+  await worker.scheduled({}, env);
+  assertCountsMatch();
+  const periods = env.DB.sqlite
+    .prepare("SELECT DISTINCT board, period FROM score_counts ORDER BY board")
+    .all().map((r) => [r.board, r.period]);
+  assert.deepEqual(periods, [["all", 0], ["day", dayOf(now)], ["week", weekOf(now)]]);
+});
+
+test("the migration counts the scores that are already on the boards", async () => {
+  const isCounts = (file) => file.startsWith("0005");
+  const { sqlite } = makeDb((file) => !isCounts(file));
+  for (const [i, best] of [300, 300, 255, 256, 9000].entries()) {
+    const id = i.toString(16).padStart(32, "0");
+    sqlite.exec(
+      `INSERT INTO players VALUES ('${id}', 'x', ${best}, 6, ${now}, ${now});
+       INSERT INTO weekly VALUES (${weekOf(now) - (i % 2)}, '${id}', ${best}, 6, ${now});
+       INSERT INTO daily VALUES (${dayOf(now) - (i % 2)}, '${id}', ${best}, 6, ${now})`
+    );
+  }
+  sqlite.exec(readFileSync(new URL(MIGRATION_FILES.find(isCounts), MIGRATIONS), "utf8"));
+  assertCountsMatch(sqlite);
+  assert.equal(sqlite.prepare("SELECT SUM(n) AS n FROM score_counts WHERE board = 'all' AND level = 1").get().n, 5);
 });
 
 // ---------- daily challenge board ----------

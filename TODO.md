@@ -1,7 +1,7 @@
 # TODO
 
 ## Release blockers
-- [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`; the daily board needs migration `0004_daily.sql`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
+- [ ] Deploy the leaderboard Worker (`leaderboard/`: `npm run deploy`, then `npm run db:migrate:remote`; the daily board needs migration `0004_daily.sql`, ranks and totals need `0005_score_counts.sql`) and paste its URL into `LEADERBOARD_URL` in `BridgeHordeApp/leaderboard.js`
 - [ ] Add the iOS app icon images (the `AppIcon` asset set is empty) and set a development team in Xcode
 - [ ] Set up Android release signing (`android/keystore.properties` + release keystore); without it release builds use the debug keystore
 - [ ] Check the main menu (new layout: map button on top, daily challenge button, two rows of two), resume flow, new-run confirmation, first-run hints, settings screen, upgrade shop, achievements screen and unlock banner, a daily run, game-over summary (with the rank line and coins), leaderboard tabs (now three), name picker, the Frozen Pass, the new enemies and the power-up crates and haptics on a real device (needs a native rebuild for `react-native-haptic-feedback`)
@@ -38,6 +38,6 @@
 - [ ] Leaderboard: limit submissions per IP address (Cloudflare rate limiting); today anyone can invent unlimited player ids and fill the board
 - [x] Leaderboard: lower the cap on run length in `plausible()` (now 2 hours, so a forged score tops out at 180,100 instead of about 2 million)
 - [x] Leaderboard: a way to remove a forged score and keep that player id from coming back (`npm run remove-score -- <name or id> --ban` in `leaderboard/`)
-- [ ] Leaderboard: the `COUNT(*)` queries read one row per player on every view; cache the board or keep a counter before the player count grows
+- [x] Leaderboard: the `COUNT(*)` queries read one row per player on every view (ranks and totals now come from a `score_counts` table that triggers keep current: under 1,000 rows per view however many players; needs migration `0005_score_counts.sql`)
 - [x] Tests for the leaderboard Worker (`npm test` in `leaderboard/`: `plausible`, submit, bans, ranking)
 - [ ] Crash reporting

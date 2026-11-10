@@ -121,6 +121,8 @@ Players are anonymous. The app makes up a random id on first launch and the serv
 
 There are three boards: all-time bests, bests for the current week, and the daily challenge (bests for the current day, daily challenge runs only). Weeks start on Monday 00:00 UTC and days at 00:00 UTC. A challenge run that ends within two hours after midnight still counts for the day it was started; later than that it only counts for the other two boards. A cron trigger (set in `wrangler.jsonc`, deployed with the Worker) clears out finished weeks and days once a day. The game-over screen shows the player's place on the all-time and weekly boards, or after a daily run on the daily and all-time boards.
 
+Ranks and board sizes are not counted from the scores on each view. The database keeps a `score_counts` table (how many players hold each score, per board) and triggers update it on every change to the score tables, so a view reads under 1,000 rows however many players there are. Anything that changes scores with plain SQL, like `remove-score`, keeps the counts right without doing anything extra.
+
 `npm test` in `leaderboard/` runs the Worker's tests. It needs Node 22.13 or newer and no install.
 
 To take an entry off all three boards, run this in `leaderboard/`:

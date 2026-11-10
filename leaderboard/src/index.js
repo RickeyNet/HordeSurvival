@@ -13,6 +13,10 @@
 // `daily`, the day number). A challenge run counts for the other two boards
 // as well. A scheduled run clears out weeks and days that are over.
 //
+// Ranks and board sizes are read from a table of score counts that database
+// triggers keep current (migrations/0005_score_counts.sql), so a view costs
+// the same however many players there are.
+//
 // There is no admin endpoint. Removing an entry (and banning its player id)
 // is done from the command line: see scripts/remove-score.js.
 //
@@ -122,20 +126,35 @@ async function readJson(request) {
 // The boards that start over: one period (a week, a day) of a table that
 // holds a row per period and player. `key` is the current period.
 const periodBoard = {
-  week: (now) => ({ table: "weekly", col: "week", key: weekOf(now), endsAt: weekEnd(weekOf(now)) }),
-  day: (now) => ({ table: "daily", col: "day", key: dayOf(now), endsAt: dayEnd(dayOf(now)) }),
+  week: (now) => ({ board: "week", table: "weekly", col: "week", key: weekOf(now), endsAt: weekEnd(weekOf(now)) }),
+  day: (now) => ({ board: "day", table: "daily", col: "day", key: dayOf(now), endsAt: dayEnd(dayOf(now)) }),
 };
 
 // Where a best score stands on a board (period = null for the all-time
 // board). Standard competition ranking: equal scores share a rank. No score,
 // no rank.
+//
+// This reads the score_counts table, not the scores themselves, so the cost
+// does not grow with the number of players (see migrations/0005). The outer
+// query adds up the blocks of 256 scores, which gives the size of the board
+// and the players in blocks above this score's; the inner one adds the
+// players above it inside its own block.
+const BLOCK_BITS = 8; // must match the `>> 8` in migrations/0005_score_counts.sql
+const PLACE_SQL = `
+  SELECT COALESCE(SUM(n), 0) AS total,
+    COALESCE(SUM(CASE WHEN bucket > ?3 THEN n END), 0) + (
+      SELECT COALESCE(SUM(n), 0) FROM score_counts
+      WHERE board = ?1 AND period = ?2 AND level = 0 AND bucket > ?4 AND bucket < ?5
+    ) AS above
+  FROM score_counts WHERE board = ?1 AND period = ?2 AND level = 1`;
 async function place(db, period, best) {
-  const count = "SELECT COUNT(*) AS total, COALESCE(SUM(best > ?1), 0) AS above FROM ";
-  const row = await (period === null
-    ? db.prepare(count + "players").bind(best ?? null)
-    : db.prepare(count + `${period.table} WHERE ${period.col} = ?2`).bind(best ?? null, period.key)
+  const ranked = best != null;
+  const block = ranked ? best >> BLOCK_BITS : null;
+  const row = await db.prepare(PLACE_SQL).bind(
+    period === null ? "all" : period.board, period === null ? 0 : period.key,
+    block, ranked ? best : null, ranked ? (block + 1) << BLOCK_BITS : null
   ).first();
-  return { best: best ?? 0, rank: best == null ? null : row.above + 1, total: row.total };
+  return { best: best ?? 0, rank: ranked ? row.above + 1 : null, total: row.total };
 }
 
 async function standing(db, playerId, now) {
@@ -286,10 +305,14 @@ export default {
   },
 
   // Cron (see wrangler.jsonc): drop weekly and daily rows from weeks and days
-  // that are over, keeping the one that just ended.
+  // that are over, keeping the one that just ended. Their score counts go
+  // first, so the triggers on the two tables find nothing left to count down.
   async scheduled(_event, env) {
     const now = Date.now();
+    const dropCounts = "DELETE FROM score_counts WHERE board = ? AND period < ?";
+    await env.DB.prepare(dropCounts).bind("week", weekOf(now) - 1).run();
     await env.DB.prepare("DELETE FROM weekly WHERE week < ?").bind(weekOf(now) - 1).run();
+    await env.DB.prepare(dropCounts).bind("day", dayOf(now) - 1).run();
     await env.DB.prepare("DELETE FROM daily WHERE day < ?").bind(dayOf(now) - 1).run();
   },
 };
