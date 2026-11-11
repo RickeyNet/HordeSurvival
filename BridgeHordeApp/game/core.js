@@ -15,6 +15,20 @@ export const MAX_TROOPS = 30;
 export const GATE_H = 52;
 export const GATE_SPEED = 58;
 export const WAVE_LEN = 18; // seconds per wave
+// The horde's speed, numbers and the wave part of its health all level off
+// around wave 12. Past that a run keeps getting harder for a while, but only
+// in ways the player can answer with aim and movement: the horde comes
+// faster, and spitters gather and fire more often. Health is left alone (more
+// of it is a wall no steering gets past), and each of these stops at a cap,
+// so no wave is ever beyond a squad that aims and dodges well.
+export const LATE_WAVE = 12; // last wave before the late ramp
+export const LATE_SPEED = 0.75; // extra zombie speed per wave past it...
+export const LATE_SPEED_MAX = 20; // ...up to this much
+export const LATE_SPIT = 0.02; // share of SPIT_EVERY a spitter drops per wave past it...
+export const LATE_SPIT_MAX = 0.25; // ...up to this much
+export const LATE_SPITTER_WAVE = 8; // waves past it until one more spitter may be on the road
+export const BOSS_TIER_MAX = 12; // bosses stop getting tougher after this many
+const lateWaves = (g) => Math.max(0, g.wave - LATE_WAVE);
 
 // ---------- Enemy catalog ----------
 // hpMul scales off the adaptive hp base; spdMul off the wave-scaled speed.
@@ -465,15 +479,15 @@ function spawnZombie(g, kind, stream = "spawns") {
   const st = KIND_STATS[kind];
   // HP tracks the player's firepower; the wave term is capped so falling
   // behind on upgrades doesn't compound into unkillable zombies.
-  const hpBase = (2.2 + Math.min(g.wave, 12) * 0.45) * powerFactor(g);
+  const hpBase = (2.2 + Math.min(g.wave, LATE_WAVE) * 0.45) * powerFactor(g);
   let hpMul = st.hpMul;
   let scoreVal = st.score;
   if (st.boss) {
-    hpMul *= 1 + (g.bossTier - 1) * 0.35; // each boss cycle comes back tougher
+    hpMul *= 1 + (Math.min(g.bossTier, BOSS_TIER_MAX) - 1) * 0.35; // each boss comes back tougher, up to a point
     scoreVal += (g.bossTier - 1) * 10;
   }
   const env = ENVS[g.env] || ENVS.bridge;
-  const baseSpeed = 40 + rand(g, stream) * 18 + Math.min(32, g.wave * 2.5);
+  const baseSpeed = 40 + rand(g, stream) * 18 + Math.min(32, g.wave * 2.5) + Math.min(LATE_SPEED_MAX, lateWaves(g) * LATE_SPEED);
   const z = {
     x: ROAD_L + 20 + rand(g, stream) * (ROAD_R - ROAD_L - 40),
     y: -30,
@@ -699,7 +713,8 @@ export function update(g, dt, saveBest) {
     const runnerP = g.wave >= 3 ? Math.min(0.3, 0.06 + g.wave * 0.02) : 0;
     // the newer kinds take the top of the roll, so the older ones keep theirs
     const spitters = g.zombies.filter((z) => z.kind === "spitter" && z.hp > 0).length;
-    const spitterP = g.wave >= 8 && spitters < MAX_SPITTERS ? Math.min(0.07, 0.01 + g.wave * 0.005) : 0;
+    const maxSpitters = MAX_SPITTERS + (lateWaves(g) >= LATE_SPITTER_WAVE ? 1 : 0);
+    const spitterP = g.wave >= 8 && spitters < maxSpitters ? Math.min(0.07, 0.01 + g.wave * 0.005) : 0;
     const weaverP = g.wave >= 6 ? Math.min(0.1, 0.02 + g.wave * 0.007) : 0;
     const bomberP = g.wave >= 4 ? Math.min(0.1, 0.02 + g.wave * 0.008) : 0;
     let kind = "walker";
@@ -789,7 +804,7 @@ export function update(g, dt, saveBest) {
       z.spitTimer -= dt;
       if (z.spitTimer <= 0) {
         // aimed at where the squad stands now, so moving on dodges it
-        z.spitTimer = SPIT_EVERY;
+        z.spitTimer = SPIT_EVERY * (1 - Math.min(LATE_SPIT_MAX, lateWaves(g) * LATE_SPIT));
         const dx = g.player.x - z.x, dy = PLAYER_Y - z.y;
         const dist = Math.sqrt(dx * dx + dy * dy) || 1;
         g.spits.push({ x: z.x, y: z.y, vx: (dx / dist) * SPIT_SPEED, vy: (dy / dist) * SPIT_SPEED });

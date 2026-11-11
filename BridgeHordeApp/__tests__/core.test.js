@@ -223,10 +223,61 @@ describe('wave scaling', () => {
     const strong = walker(1, (p) => { p.troops = 20; p.damage = 5; });
     expect(strong.hp).toBe(12); // 100x the damage output, 4x the health
     expect(walker(8).hp).toBeGreaterThan(weak.hp);
-    expect(walker(30).hp).toBe(walker(12).hp);
-    // speed also rises with the wave, up to a cap
+    // speed also rises with the wave
     expect(walker(8).speed).toBeGreaterThan(weak.speed);
-    expect(walker(30).speed).toBe(walker(13).speed);
+  });
+
+  test('past LATE_WAVE the horde gets faster up to a cap; its health stays put', () => {
+    const walker = (wave) => {
+      random(0.5);
+      const g = run({ wave, zombieTimer: 0, gateTimer: 1e9 });
+      G.update(g, 0);
+      jest.restoreAllMocks();
+      return g.zombies[0];
+    };
+    expect(walker(30).hp).toBe(walker(G.LATE_WAVE).hp);
+    expect(walker(90).hp).toBe(walker(G.LATE_WAVE).hp);
+    expect(walker(23).speed).toBeCloseTo(walker(13).speed + 10 * G.LATE_SPEED);
+    const capWave = Math.ceil(G.LATE_WAVE + G.LATE_SPEED_MAX / G.LATE_SPEED);
+    expect(walker(capWave).speed).toBeCloseTo(walker(13).speed - G.LATE_SPEED + G.LATE_SPEED_MAX);
+    expect(walker(capWave + 40).speed).toBe(walker(capWave).speed);
+  });
+
+  test('bosses stop getting tougher after BOSS_TIER_MAX', () => {
+    const boss = (bossTier) => {
+      random(0.5);
+      const g = run({ wave: 3 * bossTier + 2, bossTier: bossTier - 1, waveTimer: 0, zombieTimer: 1e9, gateTimer: 1e9 });
+      G.update(g, 0);
+      jest.restoreAllMocks();
+      return g.zombies.find((z) => z.boss);
+    };
+    // tiers 1, 4, 13 and 16 are all brutes on the bridge
+    expect(boss(4).hp).toBeGreaterThan(boss(1).hp);
+    expect(boss(13).hp).toBeGreaterThan(boss(4).hp);
+    expect(boss(16).hp).toBe(boss(13).hp);
+  });
+
+  test('late spitters fire sooner, and one more may be on the road', () => {
+    const spitAfter = (wave) => {
+      const g = run({ wave, zombieTimer: 1e9, gateTimer: 1e9 });
+      g.zombies.push(zombie({ kind: 'spitter', y: 100, spitTimer: 0 }));
+      G.update(g, 0);
+      return g.zombies[0].spitTimer;
+    };
+    expect(spitAfter(G.LATE_WAVE)).toBeCloseTo(G.SPIT_EVERY);
+    expect(spitAfter(G.LATE_WAVE + 5)).toBeCloseTo(G.SPIT_EVERY * (1 - 5 * G.LATE_SPIT));
+    expect(spitAfter(90)).toBeCloseTo(G.SPIT_EVERY * (1 - G.LATE_SPIT_MAX));
+
+    const spawned = (wave) => {
+      random(0.999); // the top of the roll is the spitter
+      const g = run({ wave, zombieTimer: 0, gateTimer: 1e9 });
+      for (let i = 0; i < G.MAX_SPITTERS; i++) g.zombies.push(zombie({ kind: 'spitter', spitTimer: 9 }));
+      G.update(g, 0);
+      jest.restoreAllMocks();
+      return g.zombies[g.zombies.length - 1].kind;
+    };
+    expect(spawned(G.LATE_WAVE + G.LATE_SPITTER_WAVE - 1)).not.toBe('spitter');
+    expect(spawned(G.LATE_WAVE + G.LATE_SPITTER_WAVE)).toBe('spitter');
   });
 });
 
